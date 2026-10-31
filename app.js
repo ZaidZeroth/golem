@@ -51,13 +51,18 @@
   ];
   const elementWords = [
     "RED", "GREEN", "BLUE", "NOT", "RIGHT", "UP", "WHILE", "DO",
-    "HAND", "EYE", "FEET"
+    "HAND", "EYE", "FEET", "CLOD"
   ];
   const pair = (left, right) => [left, right].sort().join("\u0000");
   const activeSenseIds = [
     "while-eye", "while-hand", "not-see", "not-touch",
+    "while-fist", "while-left-fist", "while-right-fist",
     "while-sight-left", "while-sight-right", "while-sight-up",
-    "sight-left", "sight-right", "sight-up"
+    "sight-left", "sight-right", "sight-up",
+    ...[1, 2, 3, 4, 5, 6, 7].map(mask => `while-touch-${({ 1: "red", 2: "green", 3: "yellow", 4: "blue", 5: "magenta", 6: "cyan", 7: "white" })[mask]}`),
+    "while-touch-hand-clod", "while-touch-red-clod", "while-touch-green-clod",
+    "while-touch-blue-clod", "while-touch-yellow-clod", "while-touch-magenta-clod",
+    "while-touch-cyan-clod", "while-touch-white-clod"
   ];
 
   function element(word) {
@@ -69,7 +74,7 @@
   }
 
   function makeBlock(id, contents) {
-    return { id, contents, x: 0, y: 0 };
+    return { id, contents, x: 0, y: 0, heldItems: { left: null, right: null } };
   }
 
   function makeInitialBlocks() {
@@ -82,7 +87,7 @@
     RED: { id: "red", category: "filter", label: "RED", reading: "red pigment", colorMask: 1 },
     GREEN: { id: "green", category: "filter", label: "GREEN", reading: "green pigment", colorMask: 2 },
     BLUE: { id: "blue", category: "filter", label: "BLUE", reading: "blue pigment", colorMask: 4 },
-    BLOCK: { id: "block", category: "filter", label: "BLOCK", reading: "a clay block" },
+    CLOD: { id: "clod", category: "clod-kind", label: "CLOD", reading: "a clay clod" },
     RIGHT: { id: "right", category: "filter", label: "RIGHT", reading: "the right direction" },
     UP: { id: "up", category: "filter", label: "UP", reading: "the upward direction" },
     HAND: { id: "hand", category: "sense-source", label: "HAND", reading: "touch", senseText: "touch" },
@@ -140,6 +145,17 @@
       if (colorMask === left.colorMask && colorMask === right.colorMask) return null;
       const mixed = mixedColors[colorMask];
       if (mixed) return provisionalMeaning(mixed.id, "color-state", mixed.label, mixed.reading, { colorMask });
+    }
+    const colorBlockColor = left.id === "clod" ? right : right.id === "clod" ? left : null;
+    if (colorBlockColor && Number.isInteger(colorBlockColor.colorMask)) {
+      return provisionalMeaning(
+        `${colorBlockColor.id}-clod`, "object-filter", `${colorBlockColor.label} CLOD`,
+        `a ${colorBlockColor.label.toLowerCase()} clod`,
+        { objectKind: "clod", colorMask: colorBlockColor.colorMask }
+      );
+    }
+    if (ids === pair("hand", "clod")) {
+      return provisionalMeaning("hand-clod", "object-filter", "HAND CLOD", "a hand clod", { objectKind: "hand" });
     }
     if (ids === pair("feet", "left")) {
       return provisionalMeaning("left-feet", "action-source", "LEFT FEET", "feet oriented to move left");
@@ -212,7 +228,7 @@
     if (ids === pair("not", "while-hand")) {
       return provisionalMeaning("not-touch", "sense", "NOT TOUCH", "while not touching anything", {
         senseKind: "touch", negated: true,
-        senseText: "not touching any other clay square"
+        senseText: "not touching any other clay clod"
       });
     }
     if ((left.id === "left" || left.id === "right") && right.id === "hand" ||
@@ -255,9 +271,21 @@
       if (Number.isInteger(color.colorMask)) {
         return provisionalMeaning(`while-touch-${color.id}`, "sense", `TOUCH ${color.label}`,
           `while touching ${color.label.toLowerCase()} pigment`, {
-            senseKind: "touch", senseText: `while touching ${color.label.toLowerCase()} pigment`
+            senseKind: "touch", senseText: `while touching ${color.label.toLowerCase()} pigment`,
+            touchColorMask: color.colorMask
           });
       }
+    }
+    if ((left.id === "while-hand" && right.category === "object-filter") ||
+        (right.id === "while-hand" && left.category === "object-filter")) {
+      const object = left.id === "while-hand" ? right : left;
+      const phrase = `while touching ${object.reading}`;
+      return provisionalMeaning(`while-touch-${object.id}`, "sense", `TOUCH ${object.label}`,
+        phrase, {
+          senseKind: "touch", senseText: phrase,
+          touchObjectKind: object.objectKind,
+          ...(Number.isInteger(object.colorMask) ? { touchColorMask: object.colorMask } : {})
+        });
     }
     if ((left.id === "while" && right.category === "sense-source") ||
         (right.id === "while" && left.category === "sense-source")) {
@@ -288,6 +316,11 @@
       const label = whileLabels[sense.id] || sense.label;
       return provisionalMeaning(`while-${sense.id}`, "sense", label, phrase, {
         senseText: phrase,
+        ...(sense.id.endsWith("fist") ? {
+          senseKind: "hold",
+          ...(sense.id === "left-fist" ? { handSide: "left" } : {}),
+          ...(sense.id === "right-fist" ? { handSide: "right" } : {})
+        } : {}),
         ...(sense.id === "eye" ? { sightRangeCells: 3 } : {})
       });
     }
@@ -308,7 +341,7 @@
         red: ["ADD RED", "add red pigment"],
         eye: ["LOOK", "look"],
         "not-eye": ["DON'T LOOK", "don't look"],
-        combine: ["COMBINE", "combine the blocks held in both hands"],
+        combine: ["COMBINE", "combine the clods held in both hands"],
         "left-hand": ["DROP LEFT", "drop what is in the left hand"],
         "right-hand": ["DROP RIGHT", "drop what is in the right hand"],
         "left-fist": ["GRAB LEFT", "grab with the left hand"],
@@ -751,6 +784,7 @@
         context.fillStyle = "#aaa7a0";
         context.fillRect(block.x, block.y, size, size);
       }
+      drawHeldItems(block, size);
       if (["do-move-left", "do-move-right", "do-move-random"].includes(meaning.id)) {
         context.strokeStyle = "#d4e2a4";
         context.lineWidth = 2;
@@ -779,6 +813,46 @@
     }
   }
 
+  function drawHeldItems(block, size) {
+    const heldItems = block.heldItems;
+    if (!heldItems || (!heldItems.left && !heldItems.right)) return;
+    for (const side of ["left", "right"]) {
+      const heldClod = heldItems[side];
+      if (!heldClod) continue;
+      const contents = heldClod.contents;
+      const meaning = describe(contents);
+      const sprite = elementSprites[meaning.id] ||
+        (meaning.id === "left-hand" || meaning.id === "right-hand" ? elementSprites.hand : null);
+      const itemSize = size * 0.34;
+      const x = block.x + (side === "left" ? size * 0.02 : size * 0.64);
+      const y = block.y + size * 0.62;
+      context.save();
+      context.globalAlpha = 0.96;
+      if (sprite?.complete && sprite.naturalWidth) {
+        if (meaning.id === "left-hand") {
+          context.translate(x + itemSize, y);
+          context.scale(-1, 1);
+          context.drawImage(sprite, 0, 0, itemSize, itemSize);
+        } else {
+          context.drawImage(sprite, x, y, itemSize, itemSize);
+        }
+      } else {
+        const art = tintedClay(meaning.colorIntentMask ?? meaning.colorMask ?? 0);
+        context.drawImage(art, x, y, itemSize, itemSize);
+      }
+      const label = faceLabel(contents);
+      context.font = `bold ${Math.max(6, size * 0.105)}px "Atkinson Hyperlegible Next", sans-serif`;
+      context.textAlign = "center";
+      context.textBaseline = "middle";
+      context.lineWidth = 2;
+      context.strokeStyle = "rgb(18 19 21 / 95%)";
+      context.fillStyle = "#fff7e7";
+      context.strokeText(label, x + itemSize / 2, y + itemSize * 0.52, itemSize - 2);
+      context.fillText(label, x + itemSize / 2, y + itemSize * 0.52, itemSize - 2);
+      context.restore();
+    }
+  }
+
   function drawGameHud() {
     const hud = gameHudLayout();
     const { width } = state.layout;
@@ -794,14 +868,15 @@
     context.lineTo(width, hud.bounds.bottom - 0.5);
     context.stroke();
 
-    const titleSize = Math.max(22, Math.min(34, hud.size * 0.56));
+    const gameTitle = "MANX MUDMEN - Hop Tu Naa Hackathon";
+    const titleSize = Math.max(12, Math.min(34, hud.size * 0.56, (width - 28) / (gameTitle.length * 0.52)));
     context.textAlign = "left";
     context.textBaseline = "middle";
     context.font = `${titleSize}px "Creepster", Georgia, serif`;
     context.fillStyle = "#fff2df";
     context.shadowColor = "rgb(0 0 0 / 80%)";
     context.shadowBlur = 3;
-    context.fillText("GOLEM", 14, hud.inset + hud.titleHeight / 2);
+    context.fillText(gameTitle, 14, hud.inset + hud.titleHeight / 2, width - 28);
     context.shadowBlur = 0;
 
     for (const token of hud.tokens) {
@@ -854,7 +929,7 @@
   function renderDetail() {
     const selected = allBlocks().find(block => block.id === state.selectedId);
     if (!selected) {
-      detail.innerHTML = '<p class="detail-placeholder">No block selected.</p>';
+      detail.innerHTML = '<p class="detail-placeholder">No clod selected.</p>';
       return;
     }
     const meaning = describe(selected.contents);
@@ -862,13 +937,9 @@
     const sensor = sensorFor(selected);
     const sightRangeCells = meaning.sightRangeCells || 3;
     const senseKind = sensor?.senseKind || (sensor?.id === "while-hand" ? "touch" : "see");
-    const positiveSenseDescription = senseKind === "touch"
-      ? "another clay square is adjacent"
-      : sensor?.direction
-        ? `another clay square is directly ${sensor.direction === "up" ? "above" : `to the ${sensor.direction}`} within ${sightRangeCells} cells`
-        : `clay within ${sightRangeCells} cells`;
+    const positiveSenseDescription = sensor ? senseConditionDescription(sensor) : `clay within ${sightRangeCells} cells`;
     const senseDescription = sensor?.negated
-      ? `no ${senseKind === "touch" ? "other clay square is adjacent" : `clay is within ${sightRangeCells} cells`}`
+      ? `no ${senseKind === "touch" ? "other clay clod is adjacent" : `clay is within ${sightRangeCells} cells`}`
       : positiveSenseDescription;
     const sightStatus = sensor
       ? selected.senseActive
@@ -1001,7 +1072,7 @@
     }
     if (!dropInClearing(block, block.x, block.y)) {
       state.blocks = state.blocks.filter(candidate => candidate.id !== block.id);
-      setStatus("The clearing is full; there is no open space for another clay square.");
+      setStatus("The clearing is full; there is no open space for another clod.");
       return;
     }
     state.selectedId = block.id;
@@ -1009,7 +1080,7 @@
     renderDetail();
     drawMap();
     setStatus(tryCombine && target
-      ? `${word.toLowerCase()} does not combine with that square yet; a copy was placed in the clearing.`
+      ? `${word.toLowerCase()} does not combine with that clod yet; a copy was placed in the clearing.`
       : `A copy of ${word.toLowerCase()} was added to the clearing. The bank source remains.`);
     startActiveMovement();
   }
@@ -1038,7 +1109,7 @@
     if (target === "combine") {
       setStatus(`Drop ${drag.word.toLowerCase()} onto ${faceLabel(combineTarget.contents)} to combine directly from the bank.`);
     } else if (target === "garden") {
-      setStatus("Drop in open garden to add a copy, or directly onto a block to combine.");
+      setStatus("Drop in open garden to add a copy, or directly onto another clod to combine.");
     } else if (target === "bank") {
       setStatus("Drop back in the element panel to cancel; the bank source stays available.");
     } else {
@@ -1158,6 +1229,25 @@
     return null;
   }
 
+  function senseConditionDescription(sense) {
+    const senseKind = sense.senseKind || (sense.id === "while-hand" ? "touch" : "see");
+    if (senseKind === "hold") return sense.handSide
+      ? `the ${sense.handSide} hand is holding clay`
+      : "either hand is holding clay";
+    if (senseKind === "touch") {
+      const colorNames = { 1: "red", 2: "green", 3: "yellow", 4: "blue", 5: "magenta", 6: "cyan", 7: "white" };
+      const color = colorNames[sense.touchColorMask];
+      if (sense.touchObjectKind === "hand") return "a hand clod is adjacent";
+      if (sense.touchObjectKind === "clod" && color) return `a ${color} clod is adjacent`;
+      if (color) return `a clay clod with ${color} pigment is adjacent`;
+      return "another clay clod is adjacent";
+    }
+    const range = sense.sightRangeCells || 3;
+    return sense.direction
+      ? `another clay clod is directly ${sense.direction === "up" ? "above" : `to the ${sense.direction}`} within ${range} cells`
+      : `clay within ${range} cells`;
+  }
+
   function sensorIsTrue(block, sense) {
     const centerX = block.x + state.layout.size / 2;
     const centerY = block.y + state.layout.size / 2;
@@ -1181,29 +1271,49 @@
         (other.x + state.layout.size / 2) - centerX,
         (other.y + state.layout.size / 2) - centerY
       ) <= range);
+    } else if (senseKind === "hold") {
+      const hands = block.heldItems || {};
+      positiveResult = sense.handSide ? Boolean(hands[sense.handSide]) : Boolean(hands.left || hands.right);
     } else if (senseKind === "touch") {
       const cell = state.layout.cell + 0.5;
-      positiveResult = others.some(other =>
-        Math.abs((other.x + state.layout.size / 2) - centerX) <= cell &&
-        Math.abs((other.y + state.layout.size / 2) - centerY) <= cell
-      );
+      positiveResult = others.some(other => {
+        const meaning = describe(other.contents);
+        if (sense.touchObjectKind && meaning.objectKind !== sense.touchObjectKind) return false;
+        if (Number.isInteger(sense.touchColorMask)) {
+          const colorMask = meaning.colorIntentMask ?? meaning.colorMask ?? 0;
+          if ((colorMask & sense.touchColorMask) !== sense.touchColorMask) return false;
+        }
+        return Math.abs((other.x + state.layout.size / 2) - centerX) <= cell &&
+          Math.abs((other.y + state.layout.size / 2) - centerY) <= cell;
+      });
     }
     return sense.negated ? !positiveResult : positiveResult;
   }
 
   function hasActivePrototypeBehavior(block) {
-    return movementFor(block) !== null || sensorFor(block) !== null;
+    return movementFor(block) !== null || sensorFor(block) !== null || actionFor(block) !== null;
+  }
+
+  function actionFor(block) {
+    const id = describe(block.contents).id;
+    const actions = {
+      "do-fist": { type: "grab" },
+      "do-left-fist": { type: "grab", side: "left" },
+      "do-right-fist": { type: "grab", side: "right" },
+      "do-hand": { type: "drop" },
+      "do-left-hand": { type: "drop", side: "left" },
+      "do-right-hand": { type: "drop", side: "right" }
+    };
+    return actions[id] || null;
   }
 
   function tickActiveMovement() {
     const now = performance.now();
     const elapsed = lastMovementTime === null ? 0 : Math.min((now - lastMovementTime) / 1000, 0.1);
     lastMovementTime = now;
-    const movers = state.blocks.map(block => ({ block, movement: movementFor(block) }))
-      .filter(item => item.movement);
-    const sightSensors = state.blocks.map(block => ({ block, sense: sensorFor(block) }))
-      .filter(item => item.sense);
-    if (!movers.length && !sightSensors.length) {
+    const actions = state.blocks.map(block => ({ block, action: actionFor(block) }))
+      .filter(item => item.action);
+    if (!state.blocks.some(hasActivePrototypeBehavior)) {
       window.clearInterval(movementTimer);
       movementTimer = null;
       lastMovementTime = null;
@@ -1211,7 +1321,21 @@
     }
 
     let moved = false;
+    let handChanged = false;
     let sightChanged = false;
+    for (const { block, action } of actions) {
+      if (!state.blocks.some(current => current.id === block.id)) continue;
+      if (state.drag?.block.id === block.id || now < (block.nextActionAt || 0)) continue;
+      block.nextActionAt = now + 700;
+      const changed = action.type === "grab"
+        ? grabAdjacentClay(block, action.side)
+        : dropHeldClay(block, action.side);
+      if (changed) handChanged = true;
+    }
+    const movers = state.blocks.map(block => ({ block, movement: movementFor(block) }))
+      .filter(item => item.movement);
+    const sightSensors = state.blocks.map(block => ({ block, sense: sensorFor(block) }))
+      .filter(item => item.sense);
     const frame = imageFrame();
     // Evaluate each sense before moving its response, so a false sense stops
     // that movement on the same update rather than one timer tick later.
@@ -1226,11 +1350,7 @@
           const pairLabel = describe(block.contents).id === "golem-pair";
           const senseKind = sense.senseKind || (sense.id === "while-hand" ? "touch" : "see");
           const senseLabel = sense.label.toLowerCase();
-          const positiveCondition = senseKind === "touch"
-            ? "another clay square is adjacent"
-            : sense.direction
-              ? `clay is directly ${sense.direction === "up" ? "above" : `to the ${sense.direction}`} within ${sense.sightRangeCells || 3} cells`
-              : `clay is within ${sense.sightRangeCells || 3} cells`;
+          const positiveCondition = senseConditionDescription(sense);
           const condition = isTrue
             ? (sense.negated ? `no ${positiveCondition}` : positiveCondition)
             : (sense.negated ? positiveCondition : `no ${positiveCondition}`);
@@ -1271,8 +1391,8 @@
         if (!block.movementBlocked) {
           block.movementBlocked = true;
           const obstruction = movementId === "do-move-random"
-            ? "blocked in every direction by another square or the clearing edge"
-            : "blocked by another square or the clearing edge";
+            ? "blocked in every direction by another clod or the clearing edge"
+            : "blocked by another clod or the clearing edge";
           setStatus(`${faceLabel(block.contents)} keeps attempting, but this clay is ${obstruction}.`);
         }
         continue;
@@ -1287,13 +1407,92 @@
     }
     const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches === true;
     const shouldPulse = sightSensors.some(({ block }) => block.senseActive) && !reducedMotion;
-    if (moved || sightChanged || shouldPulse) drawMap();
+    if (moved || handChanged || sightChanged || shouldPulse) drawMap();
   }
 
   function chooseRandomDirection(block, now) {
     const directions = shuffledCardinalDirections();
     block.randomDirection = directions[Math.floor(Math.random() * directions.length)];
     block.nextDirectionChange = now + 1000 + Math.random() * 1400;
+  }
+
+  function grabAdjacentClay(golem, requestedSide) {
+    const hands = golem.heldItems || (golem.heldItems = { left: null, right: null });
+    const availableSides = ["left", "right"].filter(side => !hands[side]);
+    if (requestedSide && !availableSides.includes(requestedSide)) {
+      setStatus(`The ${requestedSide} hand is full; it cannot grab another clod.`);
+      return false;
+    }
+    const cell = state.layout.cell + 1;
+    const centerX = golem.x + state.layout.size / 2;
+    const centerY = golem.y + state.layout.size / 2;
+    const candidates = state.blocks.filter(other => {
+      if (other.id === golem.id || other.unplaced) return false;
+      const dx = other.x + state.layout.size / 2 - centerX;
+      const dy = other.y + state.layout.size / 2 - centerY;
+      return (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) && Math.abs(dx) <= cell && Math.abs(dy) <= cell;
+    }).map(other => {
+      const dx = other.x + state.layout.size / 2 - centerX;
+      const dy = other.y + state.layout.size / 2 - centerY;
+      return { other, dx, dy, distance: dx * dx + dy * dy };
+    }).filter(candidate => requestedSide
+      ? (requestedSide === "left" ? candidate.dx < -0.5 : candidate.dx > 0.5)
+      : true)
+      .sort((a, b) => a.distance - b.distance);
+
+    const candidate = candidates.find(item => {
+      if (Math.abs(item.dx) > 0.5) {
+        const side = item.dx < 0 ? "left" : "right";
+        return !hands[side] && (!requestedSide || requestedSide === side);
+      }
+      return !requestedSide && availableSides.length > 0;
+    });
+    if (!candidate) {
+      setStatus(requestedSide
+        ? `There is no adjacent clay on the ${requestedSide}, or that hand is full.`
+        : availableSides.length ? "There is no adjacent clay that can be grabbed." : "Both hands are full; no more clay can be grabbed.");
+      return false;
+    }
+    let side = Math.abs(candidate.dx) > 0.5 ? (candidate.dx < 0 ? "left" : "right") : null;
+    if (!side) side = availableSides[Math.floor(Math.random() * availableSides.length)];
+    if (requestedSide && side !== requestedSide) return false;
+    hands[side] = candidate.other;
+    state.blocks = state.blocks.filter(other => other.id !== candidate.other.id);
+    if (state.selectedId === candidate.other.id) state.selectedId = null;
+    if (state.focusedId === candidate.other.id) state.focusedId = null;
+    if (state.targetId === candidate.other.id) state.targetId = null;
+    if (state.selectedId === golem.id) renderDetail();
+    setStatus(`${faceLabel(golem.contents)} grabbed ${faceLabel(candidate.other.contents)} into its ${side} hand.`);
+    return true;
+  }
+
+  function dropHeldClay(golem, requestedSide) {
+    const hands = golem.heldItems || (golem.heldItems = { left: null, right: null });
+    const holding = ["left", "right"].filter(side => hands[side]);
+    const side = requestedSide || holding[Math.floor(Math.random() * holding.length)];
+    if (!side || !hands[side]) {
+      setStatus(requestedSide ? `The ${requestedSide} hand is empty.` : "There is no held clay to drop.");
+      return false;
+    }
+    const heldClod = hands[side];
+    const contents = heldClod.contents;
+    const block = {
+      ...heldClod,
+      id: `held-drop-${++state.paletteCopyCount}`,
+      heldItems: { left: heldClod.heldItems?.left || null, right: heldClod.heldItems?.right || null }
+    };
+    block.x = golem.x + (side === "left" ? -state.layout.size : state.layout.size);
+    block.y = golem.y;
+    state.blocks.push(block);
+    if (!dropInClearing(block, block.x, block.y)) {
+      state.blocks = state.blocks.filter(other => other.id !== block.id);
+      setStatus("There is no open space in the clearing to drop the held clay.");
+      return false;
+    }
+    hands[side] = null;
+    if (state.selectedId === golem.id) renderDetail();
+    setStatus(`${faceLabel(golem.contents)} dropped ${faceLabel(contents)} from its ${side} hand.`);
+    return true;
   }
 
   function shuffledCardinalDirections() {
@@ -1341,7 +1540,7 @@
     state.focusedId = block.id;
     renderDetail();
     drawMap();
-    setStatus(`${faceLabel(block.contents)} selected. Drag it onto another square to combine.`);
+    setStatus(`${faceLabel(block.contents)} selected. Drag it onto another clod to combine.`);
   }
 
   function combine(target, dropped) {
@@ -1351,7 +1550,7 @@
       state.selectedId = null;
       renderDetail();
       drawMap();
-      setStatus(`No confirmed combination for ${faceLabel(target.contents)} + ${faceLabel(dropped.contents)}. Both squares stay in place.`);
+      setStatus(`No confirmed combination for ${faceLabel(target.contents)} + ${faceLabel(dropped.contents)}. Both clods stay in place.`);
       return false;
     }
 
@@ -1374,11 +1573,7 @@
       const range = describe(target.contents).sightRangeCells || 3;
       const sense = describe(target.contents);
       const senseKind = sense.senseKind || (movementId === "while-hand" ? "touch" : "see");
-      const positiveCondition = senseKind === "touch"
-        ? "another clay square is in an adjacent cell"
-        : sense.direction
-          ? `another clay square is directly ${sense.direction === "up" ? "above" : `to the ${sense.direction}`} within ${range} cells`
-          : `any other clay square is within ${range} cells`;
+      const positiveCondition = senseConditionDescription(sense);
       const condition = sense.negated ? `no ${positiveCondition}` : positiveCondition;
       setStatus(`${targetLabel} + ${droppedLabel} → ${faceLabel(target.contents)}. It senses when ${condition} and glows while the condition is true.`);
       startActiveMovement();
@@ -1387,15 +1582,15 @@
       const range = meaning.sightRangeCells || 3;
       const touchResponse = (meaning.sense?.senseKind || (meaning.sense?.id === "while-hand" ? "touch" : "see")) === "touch";
       const positiveCondition = touchResponse
-        ? "another clay square is adjacent"
+        ? "another clay clod is adjacent"
         : meaning.sense?.direction
-          ? `a clay square is directly ${meaning.sense.direction === "up" ? "above" : `to the ${meaning.sense.direction}`} within ${range} cells`
-          : `another clay square is within ${range} cells`;
+          ? `a clay clod is directly ${meaning.sense.direction === "up" ? "above" : `to the ${meaning.sense.direction}`} within ${range} cells`
+          : `another clay clod is within ${range} cells`;
       const condition = meaning.sense?.negated ? `no ${positiveCondition}` : positiveCondition;
       setStatus(`${targetLabel} + ${droppedLabel} → ${faceLabel(target.contents)}. It moves only while ${condition}.`);
       startActiveMovement();
     } else {
-      setStatus(`${targetLabel} + ${droppedLabel} → ${faceLabel(target.contents)}. ${describe(target.contents).certainty === "provisional" ? "This proposed expression has no active game behavior yet." : "The two squares have merged into one."}`);
+      setStatus(`${targetLabel} + ${droppedLabel} → ${faceLabel(target.contents)}. ${describe(target.contents).certainty === "provisional" ? "This proposed expression has no active game behavior yet." : "The two clods have merged into one."}`);
     }
     return true;
   }
@@ -1457,8 +1652,8 @@
     if (drag.overTopPanel !== overTopPanel) {
       drag.overTopPanel = overTopPanel;
       setStatus(overTopPanel
-        ? "Release anywhere in the top panel to discard this clay block."
-        : "Drop in the garden to place this block, or onto another block to combine.");
+        ? "Release anywhere in the top panel to discard this clay clod."
+        : "Drop in the garden to place this clod, or onto another clod to combine.");
     }
     drag.block.x = Math.max(0, Math.min(state.layout.width - state.layout.size, point.x - drag.offsetX));
     drag.block.y = Math.max(0, Math.min(state.layout.height - state.layout.size, point.y - drag.offsetY));
@@ -1495,7 +1690,7 @@
       renderDetail();
       drawMap();
       setStatus(target
-        ? "Those squares do not combine; the dragged clay was placed in the clearing."
+        ? "Those clods do not combine; the dragged clay was placed in the clearing."
         : "Clay placed in the clearing.");
       resumeActiveMovementAfterDrag(drag.block);
       return;
