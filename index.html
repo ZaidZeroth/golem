@@ -13,24 +13,15 @@
   </head>
   <body>
     <main class="page-shell">
-      <header class="page-header">
-        <h1>GOLEM</h1>
-      </header>
-
       <section class="workbench" aria-label="Golem world and selected block">
-        <section class="element-bank" aria-label="Element bank and world controls">
-          <div class="element-bank-controls">
-            <button class="trash-button" id="trash-button" type="button" aria-label="Discard the selected clay, or drag clay here to remove it">
-              <span aria-hidden="true">▣</span> Trash
-            </button>
-            <button class="reset-button" id="reset-button" type="button">Reset</button>
-          </div>
-          <div id="element-bank" class="element-bank-grid" aria-label="Base word elements"></div>
-        </section>
         <div class="map-board">
-          <canvas id="map-canvas" aria-label="Game world showing draggable word blocks" tabindex="0">
+          <canvas id="map-canvas" aria-label="GOLEM game world with draggable clay elements; drop a world block in the top element panel to discard it" tabindex="0">
             This prototype needs a browser with canvas support.
           </canvas>
+          <div class="visually-hidden-game-controls">
+            <h1>GOLEM</h1>
+            <div id="element-bank" aria-label="Base word elements"></div>
+          </div>
         </div>
 
         <aside class="detail-panel" aria-label="Selected block information">
@@ -40,7 +31,19 @@
         </aside>
       </section>
 
-      <p id="status" class="status" role="status" aria-live="polite">Select a square, then drag it onto another to combine.</p>
+      <p id="status" class="status" role="status" aria-live="polite">Drag a bank element directly onto a world block to combine, or drop it in open garden to add a copy.</p>
+
+      <section class="coming-soon-panel" aria-labelledby="coming-soon-heading">
+        <h2 id="coming-soon-heading">Coming soon</h2>
+        <ul class="coming-soon-elements" aria-label="Elements not yet available in the game">
+          <li>block</li>
+          <li>and</li>
+          <li>or</li>
+          <li>in</li>
+          <li>me</li>
+          <li>fit</li>
+        </ul>
+      </section>
 
     </main>
   </body>

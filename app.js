@@ -7,19 +7,20 @@
   const elementBank = document.querySelector("#element-bank");
   const detail = document.querySelector("#detail-content");
   const status = document.querySelector("#status");
-  const resetButton = document.querySelector("#reset-button");
-  const trashButton = document.querySelector("#trash-button");
   const worldImage = new Image();
   worldImage.src = "assets/golem-world-blank.png";
   worldImage.addEventListener("load", () => drawMap());
   const clayImage = new Image();
-  clayImage.src = "assets/golem-clay-lump-64px.png";
+  clayImage.src = "assets/golem-clay-lump-ink-outline-64px.png";
   clayImage.addEventListener("load", () => {
+    // Tint requests can happen before this image loads, especially while the
+    // initial palette is being built. Discard those transparent placeholders.
+    clayTintCache.clear();
     drawMap();
     renderElementBank();
   });
   const miniGolemImage = new Image();
-  miniGolemImage.src = "assets/golem-mini-golem-front-64px.png";
+  miniGolemImage.src = "assets/golem-mini-golem-front-variant-64px.png";
   miniGolemImage.addEventListener("load", () => drawMap());
   const elementSpritePaths = {
     eye: "assets/golem-clay-eye-64px.png",
@@ -49,10 +50,15 @@
     [0.23, 0.59], [0.21, 0.51], [0.22, 0.41]
   ];
   const elementWords = [
-    "RED", "GREEN", "BLUE", "BLOCK", "NOT", "AND", "OR", "RIGHT", "UP",
-    "WHILE", "DO", "HAND", "EYE", "FEET", "IN", "ME", "FIT"
+    "RED", "GREEN", "BLUE", "NOT", "RIGHT", "UP", "WHILE", "DO",
+    "HAND", "EYE", "FEET"
   ];
   const pair = (left, right) => [left, right].sort().join("\u0000");
+  const activeSenseIds = [
+    "while-eye", "while-hand", "not-see", "not-touch",
+    "while-sight-left", "while-sight-right", "while-sight-up",
+    "sight-left", "sight-right", "sight-up"
+  ];
 
   function element(word) {
     return { type: "element", word };
@@ -159,10 +165,14 @@
         "move slowly in a random cardinal direction, changing direction occasionally; tentative prototype interpretation"
       );
     }
-    if (ids === pair("right", "do-move-random")) {
+    const movementDirection = ["left", "right", "up"].find(direction =>
+      ids === pair("do-move-random", direction)
+    );
+    if (movementDirection) {
+      const directionWords = { left: "left", right: "right", up: "up" };
       return provisionalMeaning(
-        "do-move-right", "motive", "MOVE RIGHT",
-        "move slowly to the right continuously; tentative directional prototype interpretation"
+        `do-move-${movementDirection}`, "motive", `MOVE ${movementDirection.toUpperCase()}`,
+        `move slowly ${directionWords[movementDirection]}; directional prototype behavior`
       );
     }
     const notRedIds = pair("not", "red");
@@ -193,6 +203,18 @@
     if (ids === pair("not", "eye")) {
       return provisionalMeaning("not-eye", "sense-source", "NOT EYE", "the negated EYE expression; its reading depends on the outer operator", { senseText: "not seeing" });
     }
+    if (ids === pair("not", "while-eye")) {
+      return provisionalMeaning("not-see", "sense", "NOT SEE", "while not seeing anything within three cells", {
+        senseKind: "see", negated: true, sightRangeCells: 3,
+        senseText: "not seeing anything within three cells"
+      });
+    }
+    if (ids === pair("not", "while-hand")) {
+      return provisionalMeaning("not-touch", "sense", "NOT TOUCH", "while not touching anything", {
+        senseKind: "touch", negated: true,
+        senseText: "not touching any other clay square"
+      });
+    }
     if ((left.id === "left" || left.id === "right") && right.id === "hand" ||
         (right.id === "left" || right.id === "right") && left.id === "hand") {
       const direction = left.id === "left" || left.id === "right" ? left : right;
@@ -203,20 +225,39 @@
       const direction = left.id === "left" || left.id === "right" ? left : right;
       return provisionalMeaning(`${direction.id}-fist`, "sense-source", `${direction.label} FIST`, `${direction.label.toLowerCase()} fist`, { senseText: "holding" });
     }
-    if (left.id === "eye" && right.category === "filter" || right.id === "eye" && left.category === "filter") {
+    if (left.id === "eye" && (right.category === "filter" || right.category === "color-state") ||
+        right.id === "eye" && (left.category === "filter" || left.category === "color-state")) {
       const filter = left.id === "eye" ? right : left;
-      const sightReading = ["left", "right", "up"].includes(filter.id)
-        ? `seeing something to the ${filter.label.toLowerCase()}`
-        : `seeing ${filter.reading}`;
-      return provisionalMeaning(`sight-${filter.id}`, "sense", `SEE ${filter.label}`, sightReading, { senseText: sightReading });
+      const direction = ["left", "right", "up"].includes(filter.id) ? filter.id : null;
+      const sightReading = direction
+        ? `seeing something ${direction === "up" ? "above" : `to the ${direction}`}`
+        : `seeing ${Number.isInteger(filter.colorMask) ? `${filter.label.toLowerCase()} pigment` : filter.reading}`;
+      return provisionalMeaning(`sight-${filter.id}`, "sense", `SEE ${filter.label}`, sightReading, {
+        senseKind: "see", senseText: sightReading,
+        ...(direction ? { direction, sightRangeCells: 3 } : {})
+      });
     }
-    if ((left.id === "while-eye" && right.category === "filter") ||
-        (right.id === "while-eye" && left.category === "filter")) {
+    if ((left.id === "while-eye" && (right.category === "filter" || right.category === "color-state")) ||
+        (right.id === "while-eye" && (left.category === "filter" || left.category === "color-state"))) {
       const filter = left.id === "while-eye" ? right : left;
-      const sightReading = ["left", "right", "up"].includes(filter.id)
-        ? `seeing something to the ${filter.label.toLowerCase()}`
-        : `seeing ${filter.reading}`;
-      return provisionalMeaning(`while-sight-${filter.id}`, "sense", `SEE ${filter.label}`, `while ${sightReading}`, { senseText: `while ${sightReading}` });
+      const direction = ["left", "right", "up"].includes(filter.id) ? filter.id : null;
+      const sightReading = direction
+        ? `seeing something ${direction === "up" ? "above" : `to the ${direction}`}`
+        : `seeing ${Number.isInteger(filter.colorMask) ? `${filter.label.toLowerCase()} pigment` : filter.reading}`;
+      return provisionalMeaning(`while-sight-${filter.id}`, "sense", `SEE ${filter.label}`, `while ${sightReading}`, {
+        senseKind: "see", senseText: `while ${sightReading}`,
+        ...(direction ? { direction, sightRangeCells: 3 } : {})
+      });
+    }
+    if ((left.id === "while-hand" && (right.category === "filter" || right.category === "color-state")) ||
+        (right.id === "while-hand" && (left.category === "filter" || left.category === "color-state"))) {
+      const color = left.id === "while-hand" ? right : left;
+      if (Number.isInteger(color.colorMask)) {
+        return provisionalMeaning(`while-touch-${color.id}`, "sense", `TOUCH ${color.label}`,
+          `while touching ${color.label.toLowerCase()} pigment`, {
+            senseKind: "touch", senseText: `while touching ${color.label.toLowerCase()} pigment`
+          });
+      }
     }
     if ((left.id === "while" && right.category === "sense-source") ||
         (right.id === "while" && left.category === "sense-source")) {
@@ -288,7 +329,16 @@
         (right.category === "sense" && left.category === "motive")) {
       const sense = left.category === "sense" ? left : right;
       const motive = left.category === "motive" ? left : right;
-      return provisionalMeaning("golem-pair", "golem", "GOLEM", `a golem with ${sense.reading}, set to ${motive.reading}; activation is not defined`, { sense, motive });
+      const label = `${sense.label} THEN ${motive.label}`;
+      const reading = `${sense.reading}; then ${motive.reading}`;
+      const behaviorImplemented = activeSenseIds.includes(sense.id) &&
+        ["do-move-left", "do-move-right", "do-move-up", "do-move-random"].includes(motive.id);
+      return provisionalMeaning("golem-pair", "golem", label, reading, {
+        sense,
+        motive,
+        behaviorImplemented,
+        ...(behaviorImplemented ? { sightRangeCells: sense.sightRangeCells || 3 } : {})
+      });
     }
     if ((left.category === "sense" && ["and", "or"].includes(right.id)) ||
         (right.category === "sense" && ["and", "or"].includes(left.id))) {
@@ -330,6 +380,7 @@
     paletteCopyCount: 0
   };
   let lastPaletteDropTime = 0;
+  let palettePointerDrag = null;
   const movementSpeed = 16;
   let movementTimer = null;
   let lastMovementTime = null;
@@ -347,6 +398,7 @@
   }
 
   function resizeMap() {
+    const previousLayout = state.layout;
     const boardStyle = window.getComputedStyle(mapBoard);
     const horizontalPadding = parseFloat(boardStyle.paddingLeft) + parseFloat(boardStyle.paddingRight);
     const width = Math.max(280, mapBoard.clientWidth - horizontalPadding);
@@ -363,7 +415,11 @@
     canvas.width = Math.round(width * dpr);
     canvas.height = Math.round(height * dpr);
     context.setTransform(dpr, 0, 0, dpr, 0, 0);
-    arrangeBlocks();
+    if (previousLayout.width <= 1 || previousLayout.height <= 1) {
+      arrangeBlocks();
+    } else {
+      reflowBlocks(previousLayout);
+    }
     renderElementBank();
     drawMap();
   }
@@ -381,6 +437,38 @@
       width: drawWidth,
       height: drawHeight
     };
+  }
+
+  function gameHudLayout() {
+    const { width, size, cell } = state.layout;
+    const inset = 10;
+    const columns = Math.max(1, Math.floor((width - inset * 2) / cell));
+    const rows = Math.ceil(elementWords.length / columns);
+    const titleHeight = Math.max(38, Math.min(54, size * 0.82));
+    const gridTop = inset + titleHeight + 4;
+    const gridWidth = columns * cell;
+    const gridLeft = (width - gridWidth) / 2;
+    const gridHeight = rows * cell;
+    const bottom = gridTop + gridHeight + 8;
+    const tokens = elementWords.map((word, index) => {
+      const column = index % columns;
+      const row = Math.floor(index / columns);
+      const left = gridLeft + column * cell + (cell - size) / 2;
+      const top = gridTop + row * cell + (cell - size) / 2;
+      return { word, left, top, right: left + size, bottom: top + size };
+    });
+    return {
+      bounds: { left: 0, top: 0, right: width, bottom },
+      tokens,
+      titleHeight,
+      inset,
+      size
+    };
+  }
+
+  function overlapsGameHud(x, y, size) {
+    const hudBottom = gameHudLayout().bounds.bottom;
+    return x < state.layout.width && x + size > 0 && y < hudBottom && y + size > 0;
   }
 
   function pointInPolygon(x, y) {
@@ -438,6 +526,7 @@
     );
     const isOpen = (x, y, strictClearing) =>
       (strictClearing ? isSafeCell(x, y, size, frame) : insideClearing(x, y, size, frame)) &&
+      !overlapsGameHud(x, y, size) &&
       !overlapsPlaced(x, y);
 
     // Try randomized positions in the clearing. If random packing leaves a
@@ -478,16 +567,85 @@
     state.layout.rows = Math.floor(state.layout.height / state.layout.cell);
   }
 
+  function reflowBlocks(previousLayout) {
+    const { size, width, height } = state.layout;
+    const frame = imageFrame();
+    const placed = [];
+    const orderedBlocks = [...state.blocks].sort((a, b) => {
+      const priority = block =>
+        (movementFor(block) ? 0 : 1) +
+        (block.id === state.selectedId ? 0 : 1) +
+        (block.unplaced ? 2 : 0);
+      return priority(a) - priority(b);
+    });
+    const overlapsPlaced = (x, y) => placed.some(other =>
+      x < other.x + size + 2 && x + size + 2 > other.x &&
+      y < other.y + size + 2 && y + size + 2 > other.y
+    );
+    const isOpen = (x, y) =>
+      (isSafeCell(x, y, size, frame) || insideClearing(x, y, size, frame)) &&
+      !overlapsGameHud(x, y, size) &&
+      !overlapsPlaced(x, y);
+    const bounded = (value, maximum) => Math.max(0, Math.min(maximum, value));
+    const findNear = (originX, originY) => {
+      const maxX = width - size;
+      const maxY = height - size;
+      const x = bounded(originX, maxX);
+      const y = bounded(originY, maxY);
+      if (isOpen(x, y)) return { x, y };
+
+      // Search outward from the scaled point so a resize only nudges a square
+      // when the new clearing boundary or a neighbor makes its old spot invalid.
+      const step = Math.max(3, Math.floor(size / 12));
+      const maxRadius = Math.max(width, height);
+      for (let radius = step; radius <= maxRadius; radius += step) {
+        const segments = Math.max(16, Math.ceil((Math.PI * 2 * radius) / step));
+        for (let index = 0; index < segments; index += 1) {
+          const angle = (index / segments) * Math.PI * 2;
+          const candidateX = bounded(x + Math.cos(angle) * radius, maxX);
+          const candidateY = bounded(y + Math.sin(angle) * radius, maxY);
+          if (isOpen(candidateX, candidateY)) return { x: candidateX, y: candidateY };
+        }
+      }
+
+      // A fine deterministic scan handles narrow remaining gaps on small views.
+      for (let scanY = 0; scanY <= maxY; scanY += step) {
+        for (let scanX = 0; scanX <= maxX; scanX += step) {
+          if (isOpen(scanX, scanY)) return { x: scanX, y: scanY };
+        }
+      }
+      return null;
+    };
+
+    for (const block of orderedBlocks) {
+      const oldCenterX = block.x + previousLayout.size / 2;
+      const oldCenterY = block.y + previousLayout.size / 2;
+      const desiredX = (oldCenterX / previousLayout.width) * width - size / 2;
+      const desiredY = (oldCenterY / previousLayout.height) * height - size / 2;
+      const position = findNear(desiredX, desiredY);
+      if (!position) {
+        block.unplaced = true;
+        continue;
+      }
+      block.x = position.x;
+      block.y = position.y;
+      block.unplaced = false;
+      placed.push(block);
+    }
+    state.layout.columns = Math.floor(width / state.layout.cell);
+    state.layout.rows = Math.floor(height / state.layout.cell);
+  }
+
   function tintedClay(colorMask) {
     if (clayTintCache.has(colorMask)) return clayTintCache.get(colorMask);
     const tint = {
-      1: "rgb(190 55 48 / 55%)",
-      2: "rgb(68 143 73 / 55%)",
-      3: "rgb(222 192 55 / 58%)",
-      4: "rgb(65 112 193 / 55%)",
-      5: "rgb(196 67 157 / 58%)",
-      6: "rgb(61 183 184 / 58%)",
-      7: "rgb(238 239 228 / 72%)"
+      1: "rgb(190 55 48 / 25%)",
+      2: "rgb(68 143 73 / 25%)",
+      3: "rgb(222 192 55 / 25%)",
+      4: "rgb(65 112 193 / 25%)",
+      5: "rgb(196 67 157 / 25%)",
+      6: "rgb(61 183 184 / 25%)",
+      7: "rgb(238 239 228 / 25%)"
     }[colorMask] || "rgb(48 51 57 / 82%)";
     const sprite = document.createElement("canvas");
     sprite.width = clayImage.naturalWidth || 64;
@@ -506,13 +664,13 @@
   function tintedMiniGolem(colorMask) {
     if (miniGolemTintCache.has(colorMask)) return miniGolemTintCache.get(colorMask);
     const tint = {
-      1: "rgb(190 55 48 / 55%)",
-      2: "rgb(68 143 73 / 55%)",
-      3: "rgb(222 192 55 / 58%)",
-      4: "rgb(65 112 193 / 55%)",
-      5: "rgb(196 67 157 / 58%)",
-      6: "rgb(61 183 184 / 58%)",
-      7: "rgb(238 239 228 / 72%)"
+      1: "rgb(190 55 48 / 25%)",
+      2: "rgb(68 143 73 / 25%)",
+      3: "rgb(222 192 55 / 25%)",
+      4: "rgb(65 112 193 / 25%)",
+      5: "rgb(196 67 157 / 25%)",
+      6: "rgb(61 183 184 / 25%)",
+      7: "rgb(238 239 228 / 25%)"
     }[colorMask];
     if (!tint) return miniGolemImage;
     const sprite = document.createElement("canvas");
@@ -539,6 +697,7 @@
       context.fillStyle = "#263328";
       context.fillRect(0, 0, width, height);
     }
+    drawGameHud();
     for (const block of state.blocks) {
       if (block.unplaced) continue;
       const selected = block.id === state.selectedId;
@@ -546,9 +705,10 @@
       const target = block.id === state.targetId;
       const meaning = describe(block.contents);
       const isCreature = ["sense", "motive", "golem"].includes(meaning.category);
-      const sightIsTrue = meaning.id === "while-eye" && block.senseActive;
+      const sightIsTrue = sensorFor(block) !== null && block.senseActive;
       const colorMask = meaning.colorIntentMask ?? meaning.colorMask ?? 0;
-      const elementSprite = elementSprites[meaning.id];
+      const handDirection = meaning.id === "left-hand" ? "left" : meaning.id === "right-hand" ? "right" : null;
+      const elementSprite = elementSprites[meaning.id] || (handDirection ? elementSprites.hand : null);
       if (sightIsTrue) {
         const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches === true;
         const pulse = reducedMotion ? 1 : 0.5 + (Math.sin(performance.now() / 260) + 1) * 0.18;
@@ -567,7 +727,15 @@
         context.restore();
       }
       if (elementSprite?.complete && elementSprite.naturalWidth) {
-        context.drawImage(elementSprite, block.x, block.y, size, size);
+        if (handDirection === "left") {
+          context.save();
+          context.translate(block.x + size, block.y);
+          context.scale(-1, 1);
+          context.drawImage(elementSprite, 0, 0, size, size);
+          context.restore();
+        } else {
+          context.drawImage(elementSprite, block.x, block.y, size, size);
+        }
       } else if (isCreature && miniGolemImage.complete && miniGolemImage.naturalWidth) {
         context.save();
         // The brighter face and crisp dark features read against both the clay
@@ -611,6 +779,74 @@
     }
   }
 
+  function drawGameHud() {
+    const hud = gameHudLayout();
+    const { width } = state.layout;
+    context.save();
+    context.fillStyle = "rgb(25 30 29 / 72%)";
+    context.fillRect(0, 0, width, hud.bounds.bottom);
+    context.strokeStyle = state.drag?.overTopPanel
+      ? "rgb(246 187 123 / 88%)"
+      : "rgb(190 195 170 / 42%)";
+    context.lineWidth = state.drag?.overTopPanel ? 2 : 1;
+    context.beginPath();
+    context.moveTo(0, hud.bounds.bottom - 0.5);
+    context.lineTo(width, hud.bounds.bottom - 0.5);
+    context.stroke();
+
+    const titleSize = Math.max(22, Math.min(34, hud.size * 0.56));
+    context.textAlign = "left";
+    context.textBaseline = "middle";
+    context.font = `${titleSize}px "Creepster", Georgia, serif`;
+    context.fillStyle = "#fff2df";
+    context.shadowColor = "rgb(0 0 0 / 80%)";
+    context.shadowBlur = 3;
+    context.fillText("GOLEM", 14, hud.inset + hud.titleHeight / 2);
+    context.shadowBlur = 0;
+
+    for (const token of hud.tokens) {
+      const contents = element(token.word);
+      const meaning = describe(contents);
+      const sprite = elementSprites[meaning.id];
+      const art = sprite?.complete && sprite.naturalWidth ? sprite : tintedClay(meaning.colorMask || 0);
+      if (art.width && art.height) context.drawImage(art, token.left, token.top, hud.size, hud.size);
+      context.fillStyle = "#fff7e7";
+      context.strokeStyle = "rgb(18 19 21 / 92%)";
+      context.lineWidth = Math.max(1.5, hud.size * 0.04);
+      context.textAlign = "center";
+      context.textBaseline = "middle";
+      context.font = `${faceFontSize(faceLabel(contents), hud.size)}px "Creepster", Georgia, serif`;
+      context.shadowColor = "rgb(255 247 224 / 78%)";
+      context.shadowBlur = 2;
+      const centerX = (token.left + token.right) / 2;
+      const centerY = (token.top + token.bottom) / 2;
+      context.strokeText(faceLabel(contents), centerX, centerY, hud.size - 8);
+      context.fillText(faceLabel(contents), centerX, centerY, hud.size - 8);
+      context.shadowBlur = 0;
+    }
+
+    if (palettePointerDrag?.moved) {
+      const drag = palettePointerDrag;
+      const left = drag.point.x - drag.offsetX;
+      const top = drag.point.y - drag.offsetY;
+      const meaning = describe(element(drag.word));
+      const sprite = elementSprites[meaning.id];
+      const art = sprite?.complete && sprite.naturalWidth ? sprite : tintedClay(meaning.colorMask || 0);
+      context.globalAlpha = 0.86;
+      if (art.width && art.height) context.drawImage(art, left, top, hud.size, hud.size);
+      context.fillStyle = "#fff7e7";
+      context.strokeStyle = "rgb(18 19 21 / 92%)";
+      context.lineWidth = 2;
+      context.textAlign = "center";
+      context.textBaseline = "middle";
+      context.font = `${faceFontSize(faceLabel(element(drag.word)), hud.size)}px "Creepster", Georgia, serif`;
+      const label = faceLabel(element(drag.word));
+      context.strokeText(label, left + hud.size / 2, top + hud.size / 2, hud.size - 8);
+      context.fillText(label, left + hud.size / 2, top + hud.size / 2, hud.size - 8);
+    }
+    context.restore();
+  }
+
   function faceFontSize(label, size) {
     return Math.max(9, Math.min(20, size * 0.34 - Math.max(0, label.length - 7) * 0.48));
   }
@@ -623,18 +859,34 @@
     }
     const meaning = describe(selected.contents);
     const provisional = meaning.certainty === "provisional" || meaning.certainty === "unresolved";
+    const sensor = sensorFor(selected);
     const sightRangeCells = meaning.sightRangeCells || 3;
-    const sightStatus = meaning.id === "while-eye"
+    const senseKind = sensor?.senseKind || (sensor?.id === "while-hand" ? "touch" : "see");
+    const positiveSenseDescription = senseKind === "touch"
+      ? "another clay square is adjacent"
+      : sensor?.direction
+        ? `another clay square is directly ${sensor.direction === "up" ? "above" : `to the ${sensor.direction}`} within ${sightRangeCells} cells`
+        : `clay within ${sightRangeCells} cells`;
+    const senseDescription = sensor?.negated
+      ? `no ${senseKind === "touch" ? "other clay square is adjacent" : `clay is within ${sightRangeCells} cells`}`
+      : positiveSenseDescription;
+    const sightStatus = sensor
       ? selected.senseActive
-        ? `Sensing true · clay within ${sightRangeCells} cells`
-        : `Sensing false · no clay within ${sightRangeCells} cells`
+        ? `Sensing true · ${senseDescription}`
+        : `Sensing false · ${positiveSenseDescription}`
       : null;
     const movementStatuses = {
       "do-move-left": "Prototype movement experiment · the language rule remains open",
       "do-move-right": "Prototype movement experiment · the language rule remains open",
+      "do-move-up": "Prototype movement experiment · the language rule remains open",
       "do-move-random": "Tentative random-walk experiment · the language rule remains open"
     };
-    const readingStatus = sightStatus || movementStatuses[meaning.id] ||
+    const pairedMovementStatus = meaning.id === "golem-pair" && meaning.behaviorImplemented
+      ? selected.senseActive
+        ? `Prototype response active · ${senseDescription}`
+        : `Prototype response waiting · moves only while ${sensor?.label?.toLowerCase() || "the sense"} is true`
+      : null;
+    const readingStatus = pairedMovementStatus || sightStatus || movementStatuses[meaning.id] ||
       (provisional ? "Proposed reading · behavior not simulated" : "Element");
     detail.innerHTML = `<dl class="detail-list"><div><dt>Construction</dt><dd class="detail-construction"></dd></div><div><dt>Natural language</dt><dd class="detail-reading"></dd><small class="reading-status">${readingStatus}</small></div></dl>`;
     detail.querySelector(".detail-construction").textContent = construction(selected.contents);
@@ -657,10 +909,9 @@
     return null;
   }
 
-  function pointerIsOverTrash(clientX, clientY) {
-    const rect = trashButton.getBoundingClientRect();
-    return clientX >= rect.left && clientX <= rect.right &&
-      clientY >= rect.top && clientY <= rect.bottom;
+  function pointerIsOverTopPanel(clientX, clientY) {
+    const point = canvasPoint({ clientX, clientY });
+    return pointInsideRect(point.x, point.y, gameHudLayout().bounds);
   }
 
   function discardBlock(block) {
@@ -668,9 +919,7 @@
     if (state.selectedId === block.id) state.selectedId = null;
     if (state.focusedId === block.id) state.focusedId = null;
     if (state.targetId === block.id) state.targetId = null;
-    if (!state.blocks.some(candidate =>
-      ["do-move-left", "do-move-right", "do-move-random", "while-eye"].includes(describe(candidate.contents).id)
-    )) stopActiveMovement();
+    if (!state.blocks.some(hasActivePrototypeBehavior)) stopActiveMovement();
     renderDetail();
     drawMap();
     setStatus(`${faceLabel(block.contents)} discarded.`);
@@ -678,7 +927,10 @@
 
   function canvasPoint(event) {
     const rect = canvas.getBoundingClientRect();
-    return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+    return {
+      x: (event.clientX - rect.left) * (state.layout.width / rect.width),
+      y: (event.clientY - rect.top) * (state.layout.height / rect.height)
+    };
   }
 
   function insideClearing(x, y, size, frame) {
@@ -735,8 +987,10 @@
     return false;
   }
 
-  function addPaletteElement(word, point, tryCombine) {
-    const target = tryCombine ? hitTest(point) : null;
+  function addPaletteElement(word, point, tryCombine, pointerPoint = point) {
+    // Use the actual drop pointer first. The bank sprite's grab offset can
+    // otherwise shift its visual center off the target square.
+    const target = tryCombine ? hitTest(pointerPoint) || hitTest(point) : null;
     const block = makeBlock(`bank-copy-${++state.paletteCopyCount}`, element(word));
     block.x = point.x - state.layout.size / 2;
     block.y = point.y - state.layout.size / 2;
@@ -760,6 +1014,92 @@
     startActiveMovement();
   }
 
+  function pointInsideRect(x, y, rect) {
+    return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+  }
+
+  function paletteDropTarget(clientX, clientY) {
+    const point = canvasPoint({ clientX, clientY });
+    const hud = gameHudLayout();
+    const rect = canvas.getBoundingClientRect();
+    const insideCanvas = clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom;
+    if (!insideCanvas) return "outside";
+    if (pointInsideRect(point.x, point.y, hud.bounds)) return "bank";
+    return "garden";
+  }
+
+  function updatePaletteDropTarget(drag, clientX, clientY) {
+    const region = paletteDropTarget(clientX, clientY);
+    const point = canvasPoint({ clientX, clientY });
+    const combineTarget = region === "garden" ? hitTest(point) : null;
+    const target = combineTarget ? "combine" : region;
+    if (drag.dropTarget === target) return;
+    drag.dropTarget = target;
+    if (target === "combine") {
+      setStatus(`Drop ${drag.word.toLowerCase()} onto ${faceLabel(combineTarget.contents)} to combine directly from the bank.`);
+    } else if (target === "garden") {
+      setStatus("Drop in open garden to add a copy, or directly onto a block to combine.");
+    } else if (target === "bank") {
+      setStatus("Drop back in the element panel to cancel; the bank source stays available.");
+    } else {
+      setStatus("Drop clay in the garden to add a copy. The bank source stays in place.");
+    }
+  }
+
+  function clearPaletteDrag() {
+    palettePointerDrag = null;
+    drawMap();
+  }
+
+  function movePalettePointerDrag(event) {
+    const drag = palettePointerDrag;
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    const distance = Math.hypot(event.clientX - drag.startClientX, event.clientY - drag.startClientY);
+    if (!drag.moved && distance < 6) return;
+    event.preventDefault();
+    drag.moved = true;
+    drag.point = canvasPoint(event);
+    updatePaletteDropTarget(drag, event.clientX, event.clientY);
+    drawMap();
+  }
+
+  function finishPalettePointerDrag(event) {
+    const drag = palettePointerDrag;
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    drag.point = canvasPoint(event);
+    palettePointerDrag = null;
+    drawMap();
+    if (!drag.moved) {
+      addPaletteElement(drag.word, { x: state.layout.width / 2, y: state.layout.height / 2 }, false);
+      return;
+    }
+
+    lastPaletteDropTime = performance.now();
+    const target = paletteDropTarget(event.clientX, event.clientY);
+    if (target === "bank") {
+      setStatus("No copy added. The element remains available in the bank.");
+      return;
+    }
+    if (target === "garden") {
+      const dropPoint = {
+        x: drag.point.x - drag.offsetX + state.layout.size / 2,
+        y: drag.point.y - drag.offsetY + state.layout.size / 2
+      };
+      addPaletteElement(drag.word, dropPoint, true, drag.point);
+      return;
+    }
+    setStatus("No clay was added. Drop the element over the garden; the bank source remains available.");
+  }
+
+  window.addEventListener("pointermove", movePalettePointerDrag, { passive: false });
+  window.addEventListener("pointerup", finishPalettePointerDrag);
+  window.addEventListener("pointercancel", event => {
+    const drag = palettePointerDrag;
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    clearPaletteDrag();
+    if (drag.moved) setStatus("Element drag cancelled. The bank source remains available.");
+  });
+
   function renderElementBank() {
     elementBank.replaceChildren();
     for (const word of elementWords) {
@@ -781,12 +1121,8 @@
       label.style.fontSize = `${faceFontSize(label.textContent, state.layout.size)}px`;
       button.append(label);
       button.dataset.elementWord = word;
-      button.draggable = true;
+      button.draggable = false;
       button.setAttribute("aria-label", `Add a copy of ${faceLabel(contents)} to the game world`);
-      button.addEventListener("dragstart", event => {
-        event.dataTransfer.setData("text/plain", word);
-        event.dataTransfer.effectAllowed = "copy";
-      });
       elementBank.append(button);
     }
   }
@@ -800,29 +1136,73 @@
     }, false);
   });
 
-  canvas.addEventListener("dragover", event => {
-    if (event.dataTransfer?.types.includes("text/plain")) {
-      event.preventDefault();
-      event.dataTransfer.dropEffect = "copy";
-    }
-  });
+  const movementIds = ["do-move-left", "do-move-right", "do-move-up", "do-move-random"];
 
-  canvas.addEventListener("drop", event => {
-    event.preventDefault();
-    const word = event.dataTransfer?.getData("text/plain");
-    if (!elementMeanings[word]) return;
-    lastPaletteDropTime = performance.now();
-    addPaletteElement(word, canvasPoint(event), true);
-  });
+  function movementFor(block) {
+    const meaning = describe(block.contents);
+    if (movementIds.includes(meaning.id)) return { action: meaning, conditioned: false };
+    if (meaning.id === "golem-pair" && activeSenseIds.includes(meaning.sense?.id) &&
+        movementIds.includes(meaning.motive?.id)) {
+      return { action: meaning.motive, conditioned: true };
+    }
+    return null;
+  }
+
+  function sensorFor(block) {
+    const meaning = describe(block.contents);
+    if (activeSenseIds.includes(meaning.id)) return meaning;
+    if (meaning.id === "golem-pair" && meaning.behaviorImplemented &&
+        activeSenseIds.includes(meaning.sense?.id)) {
+      return meaning.sense;
+    }
+    return null;
+  }
+
+  function sensorIsTrue(block, sense) {
+    const centerX = block.x + state.layout.size / 2;
+    const centerY = block.y + state.layout.size / 2;
+    const others = state.blocks.filter(other => !other.unplaced && other.id !== block.id);
+    const senseKind = sense.senseKind || (sense.id === "while-hand" ? "touch" : "see");
+    let positiveResult = false;
+    if (senseKind === "see" && sense.direction) {
+      const range = state.layout.cell * (sense.sightRangeCells || 3);
+      const laneTolerance = state.layout.cell / 2;
+      positiveResult = others.some(other => {
+        const dx = other.x - block.x;
+        const dy = other.y - block.y;
+        if (sense.direction === "up") return Math.abs(dx) <= laneTolerance && dy < 0 && -dy <= range;
+        if (sense.direction === "left") return Math.abs(dy) <= laneTolerance && dx < 0 && -dx <= range;
+        if (sense.direction === "right") return Math.abs(dy) <= laneTolerance && dx > 0 && dx <= range;
+        return false;
+      });
+    } else if (senseKind === "see") {
+      const range = state.layout.cell * (sense.sightRangeCells || 3);
+      positiveResult = others.some(other => Math.hypot(
+        (other.x + state.layout.size / 2) - centerX,
+        (other.y + state.layout.size / 2) - centerY
+      ) <= range);
+    } else if (senseKind === "touch") {
+      const cell = state.layout.cell + 0.5;
+      positiveResult = others.some(other =>
+        Math.abs((other.x + state.layout.size / 2) - centerX) <= cell &&
+        Math.abs((other.y + state.layout.size / 2) - centerY) <= cell
+      );
+    }
+    return sense.negated ? !positiveResult : positiveResult;
+  }
+
+  function hasActivePrototypeBehavior(block) {
+    return movementFor(block) !== null || sensorFor(block) !== null;
+  }
 
   function tickActiveMovement() {
     const now = performance.now();
     const elapsed = lastMovementTime === null ? 0 : Math.min((now - lastMovementTime) / 1000, 0.1);
     lastMovementTime = now;
-    const movers = state.blocks.filter(block =>
-      ["do-move-left", "do-move-right", "do-move-random"].includes(describe(block.contents).id)
-    );
-    const sightSensors = state.blocks.filter(block => describe(block.contents).id === "while-eye");
+    const movers = state.blocks.map(block => ({ block, movement: movementFor(block) }))
+      .filter(item => item.movement);
+    const sightSensors = state.blocks.map(block => ({ block, sense: sensorFor(block) }))
+      .filter(item => item.sense);
     if (!movers.length && !sightSensors.length) {
       window.clearInterval(movementTimer);
       movementTimer = null;
@@ -833,28 +1213,68 @@
     let moved = false;
     let sightChanged = false;
     const frame = imageFrame();
-    for (const block of movers) {
-      if (state.drag?.block.id === block.id) continue;
-      const movementId = describe(block.contents).id;
+    // Evaluate each sense before moving its response, so a false sense stops
+    // that movement on the same update rather than one timer tick later.
+    for (const { block, sense } of sightSensors) {
+      const wasInitialized = typeof block.senseActive === "boolean";
+      const isTrue = sensorIsTrue(block, sense);
+      if (block.senseActive !== isTrue) {
+        block.senseActive = isTrue;
+        sightChanged = true;
+        if (state.selectedId === block.id) renderDetail();
+        if (wasInitialized) {
+          const pairLabel = describe(block.contents).id === "golem-pair";
+          const senseKind = sense.senseKind || (sense.id === "while-hand" ? "touch" : "see");
+          const senseLabel = sense.label.toLowerCase();
+          const positiveCondition = senseKind === "touch"
+            ? "another clay square is adjacent"
+            : sense.direction
+              ? `clay is directly ${sense.direction === "up" ? "above" : `to the ${sense.direction}`} within ${sense.sightRangeCells || 3} cells`
+              : `clay is within ${sense.sightRangeCells || 3} cells`;
+          const condition = isTrue
+            ? (sense.negated ? `no ${positiveCondition}` : positiveCondition)
+            : (sense.negated ? positiveCondition : `no ${positiveCondition}`);
+          setStatus(isTrue
+            ? `${pairLabel ? `${senseLabel} then move` : `while ${senseLabel}`} is true: ${condition}.`
+            : `${pairLabel ? `${senseLabel} then move` : `while ${senseLabel}`} is false: ${condition}.`);
+        }
+      }
+    }
+
+    for (const { block, movement } of movers) {
+      if (state.drag?.block.id === block.id || (movement.conditioned && !block.senseActive)) continue;
+      const movementId = movement.action.id;
       if (movementId === "do-move-random" && (!block.nextDirectionChange || now >= block.nextDirectionChange)) {
         chooseRandomDirection(block, now);
       }
-      const direction = movementId === "do-move-left"
+      let direction = movementId === "do-move-left"
         ? { x: -1, y: 0 }
         : movementId === "do-move-right"
           ? { x: 1, y: 0 }
-          : block.randomDirection;
-      const nextX = Math.max(0, Math.min(state.layout.width - state.layout.size, block.x + direction.x * movementSpeed * elapsed));
-      const nextY = Math.max(0, Math.min(state.layout.height - state.layout.size, block.y + direction.y * movementSpeed * elapsed));
-      const blocked = (nextX === block.x && nextY === block.y) ||
-        !isSafeCell(nextX, nextY, state.layout.size, frame) ||
-        overlapsAnotherBlock(block, nextX, nextY);
+          : movementId === "do-move-up"
+            ? { x: 0, y: -1 }
+            : block.randomDirection;
+      let next = movementPosition(block, direction, elapsed, frame);
+      if (next.blocked && movementId === "do-move-random") {
+        const openDirections = shuffledCardinalDirections()
+          .filter(candidate => candidate.x !== direction.x || candidate.y !== direction.y)
+          .filter(candidate => !movementPosition(block, candidate, elapsed, frame).blocked);
+        if (openDirections.length) {
+          direction = openDirections[0];
+          block.randomDirection = direction;
+          block.nextDirectionChange = now + 1000 + Math.random() * 1400;
+          next = movementPosition(block, direction, elapsed, frame);
+        }
+      }
+      const { x: nextX, y: nextY, blocked } = next;
       if (blocked) {
         if (!block.movementBlocked) {
           block.movementBlocked = true;
-          setStatus(`${faceLabel(block.contents)} keeps attempting, but this clay is blocked by another square or the clearing edge.`);
+          const obstruction = movementId === "do-move-random"
+            ? "blocked in every direction by another square or the clearing edge"
+            : "blocked by another square or the clearing edge";
+          setStatus(`${faceLabel(block.contents)} keeps attempting, but this clay is ${obstruction}.`);
         }
-        if (movementId === "do-move-random") chooseRandomDirection(block, now);
         continue;
       }
       if (block.movementBlocked) {
@@ -865,41 +1285,32 @@
       block.y = nextY;
       moved = true;
     }
-    for (const sensor of sightSensors) {
-      const sightRangeCells = describe(sensor.contents).sightRangeCells || 3;
-      const sightRange = state.layout.cell * sightRangeCells;
-      const wasInitialized = typeof sensor.senseActive === "boolean";
-      const isTrue = state.blocks.some(other => other.id !== sensor.id &&
-        Math.hypot(
-          (other.x + state.layout.size / 2) - (sensor.x + state.layout.size / 2),
-          (other.y + state.layout.size / 2) - (sensor.y + state.layout.size / 2)
-        ) <= sightRange);
-      if (sensor.senseActive !== isTrue) {
-        sensor.senseActive = isTrue;
-        sightChanged = true;
-        if (state.selectedId === sensor.id) renderDetail();
-        if (wasInitialized) {
-          setStatus(isTrue
-            ? `while see is true: clay is within ${sightRangeCells} cells.`
-            : `while see is false: no clay is within ${sightRangeCells} cells.`);
-        }
-      }
-    }
     const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches === true;
-    const shouldPulse = sightSensors.some(sensor => sensor.senseActive) && !reducedMotion;
+    const shouldPulse = sightSensors.some(({ block }) => block.senseActive) && !reducedMotion;
     if (moved || sightChanged || shouldPulse) drawMap();
   }
 
   function chooseRandomDirection(block, now) {
-    const directions = [{ x: 1, y: 0 }, { x: -1, y: 0 }, { x: 0, y: 1 }, { x: 0, y: -1 }];
+    const directions = shuffledCardinalDirections();
     block.randomDirection = directions[Math.floor(Math.random() * directions.length)];
     block.nextDirectionChange = now + 1000 + Math.random() * 1400;
   }
 
+  function shuffledCardinalDirections() {
+    return shuffle([{ x: 1, y: 0 }, { x: -1, y: 0 }, { x: 0, y: 1 }, { x: 0, y: -1 }]);
+  }
+
+  function movementPosition(block, direction, elapsed, frame) {
+    const nextX = Math.max(0, Math.min(state.layout.width - state.layout.size, block.x + direction.x * movementSpeed * elapsed));
+    const nextY = Math.max(0, Math.min(state.layout.height - state.layout.size, block.y + direction.y * movementSpeed * elapsed));
+    const blocked = (nextX === block.x && nextY === block.y) ||
+      !isSafeCell(nextX, nextY, state.layout.size, frame) ||
+      overlapsAnotherBlock(block, nextX, nextY);
+    return { x: nextX, y: nextY, blocked };
+  }
+
   function startActiveMovement() {
-    if (movementTimer || !state.blocks.some(block =>
-      ["do-move-left", "do-move-right", "do-move-random", "while-eye"].includes(describe(block.contents).id)
-    )) return;
+    if (movementTimer || !state.blocks.some(hasActivePrototypeBehavior)) return;
     lastMovementTime = performance.now();
     movementTimer = window.setInterval(tickActiveMovement, 50);
   }
@@ -908,6 +1319,14 @@
     if (movementTimer) window.clearInterval(movementTimer);
     movementTimer = null;
     lastMovementTime = null;
+  }
+
+  function resumeActiveMovementAfterDrag(block) {
+    if (block) block.movementBlocked = false;
+    if (movementTimer) window.clearInterval(movementTimer);
+    movementTimer = null;
+    lastMovementTime = null;
+    startActiveMovement();
   }
 
   function selectBlock(block) {
@@ -945,15 +1364,35 @@
     renderDetail();
     drawMap();
     const movementId = describe(target.contents).id;
-    if (["do-move-left", "do-move-right", "do-move-random"].includes(movementId)) {
+    if (["do-move-left", "do-move-right", "do-move-up", "do-move-random"].includes(movementId)) {
       const movementNote = movementId === "do-move-random"
         ? "This tentative prototype guess wanders slowly in random directions; the game rule is not settled."
-        : `This provisional action keeps trying to move slowly ${movementId === "do-move-left" ? "left" : "right"}; the movement rule remains open.`;
+        : `This provisional action keeps trying to move slowly ${movementId.slice("do-move-".length)}; the movement rule remains open.`;
       setStatus(`${targetLabel} + ${droppedLabel} → ${faceLabel(target.contents)}. ${movementNote}`);
       startActiveMovement();
-    } else if (movementId === "while-eye") {
+    } else if (activeSenseIds.includes(movementId)) {
       const range = describe(target.contents).sightRangeCells || 3;
-      setStatus(`${targetLabel} + ${droppedLabel} → ${faceLabel(target.contents)}. It senses any other clay square within ${range} cells and glows while the condition is true.`);
+      const sense = describe(target.contents);
+      const senseKind = sense.senseKind || (movementId === "while-hand" ? "touch" : "see");
+      const positiveCondition = senseKind === "touch"
+        ? "another clay square is in an adjacent cell"
+        : sense.direction
+          ? `another clay square is directly ${sense.direction === "up" ? "above" : `to the ${sense.direction}`} within ${range} cells`
+          : `any other clay square is within ${range} cells`;
+      const condition = sense.negated ? `no ${positiveCondition}` : positiveCondition;
+      setStatus(`${targetLabel} + ${droppedLabel} → ${faceLabel(target.contents)}. It senses when ${condition} and glows while the condition is true.`);
+      startActiveMovement();
+    } else if (movementId === "golem-pair" && describe(target.contents).behaviorImplemented) {
+      const meaning = describe(target.contents);
+      const range = meaning.sightRangeCells || 3;
+      const touchResponse = (meaning.sense?.senseKind || (meaning.sense?.id === "while-hand" ? "touch" : "see")) === "touch";
+      const positiveCondition = touchResponse
+        ? "another clay square is adjacent"
+        : meaning.sense?.direction
+          ? `a clay square is directly ${meaning.sense.direction === "up" ? "above" : `to the ${meaning.sense.direction}`} within ${range} cells`
+          : `another clay square is within ${range} cells`;
+      const condition = meaning.sense?.negated ? `no ${positiveCondition}` : positiveCondition;
+      setStatus(`${targetLabel} + ${droppedLabel} → ${faceLabel(target.contents)}. It moves only while ${condition}.`);
       startActiveMovement();
     } else {
       setStatus(`${targetLabel} + ${droppedLabel} → ${faceLabel(target.contents)}. ${describe(target.contents).certainty === "provisional" ? "This proposed expression has no active game behavior yet." : "The two squares have merged into one."}`);
@@ -963,55 +1402,91 @@
 
   canvas.addEventListener("pointerdown", event => {
     const point = canvasPoint(event);
+    const hud = gameHudLayout();
+    if (!event.isPrimary || (event.pointerType === "mouse" && event.button !== 0)) return;
+
+    // Hit-test the clay first because it is painted above the HUD.
     const block = hitTest(point);
-    if (!block) return;
-    event.preventDefault();
-    state.focusedId = block.id;
-    state.drag = {
-      block,
-      startX: block.x,
-      startY: block.y,
-      offsetX: point.x - block.x,
-      offsetY: point.y - block.y,
-      pointerId: event.pointerId,
-      moved: false
-    };
-    canvas.setPointerCapture(event.pointerId);
-    drawMap();
+    if (block) {
+      event.preventDefault();
+      state.focusedId = block.id;
+      state.drag = {
+        block,
+        startX: block.x,
+        startY: block.y,
+        offsetX: point.x - block.x,
+        offsetY: point.y - block.y,
+        pointerId: event.pointerId,
+        lastClientX: event.clientX,
+        lastClientY: event.clientY,
+        moved: false
+      };
+      canvas.setPointerCapture(event.pointerId);
+      drawMap();
+      return;
+    }
+
+    const token = hud.tokens.find(candidate => pointInsideRect(point.x, point.y, candidate));
+    if (token) {
+      event.preventDefault();
+      palettePointerDrag = {
+        word: token.word,
+        pointerId: event.pointerId,
+        startClientX: event.clientX,
+        startClientY: event.clientY,
+        offsetX: point.x - token.left,
+        offsetY: point.y - token.top,
+        point,
+        moved: false,
+        dropTarget: null
+      };
+      canvas.setPointerCapture(event.pointerId);
+      return;
+    }
   });
 
-  canvas.addEventListener("pointermove", event => {
+  function moveWorldPointerDrag(event) {
     if (!state.drag || state.drag.pointerId !== event.pointerId) return;
+    state.drag.lastClientX = event.clientX;
+    state.drag.lastClientY = event.clientY;
     const point = canvasPoint(event);
     const drag = state.drag;
     if (!drag.moved && Math.hypot(point.x - (drag.startX + drag.offsetX), point.y - (drag.startY + drag.offsetY)) < 7) return;
     drag.moved = true;
-    trashButton.classList.toggle("drop-ready", pointerIsOverTrash(event.clientX, event.clientY));
+    const overTopPanel = pointInsideRect(point.x, point.y, gameHudLayout().bounds);
+    if (drag.overTopPanel !== overTopPanel) {
+      drag.overTopPanel = overTopPanel;
+      setStatus(overTopPanel
+        ? "Release anywhere in the top panel to discard this clay block."
+        : "Drop in the garden to place this block, or onto another block to combine.");
+    }
     drag.block.x = Math.max(0, Math.min(state.layout.width - state.layout.size, point.x - drag.offsetX));
     drag.block.y = Math.max(0, Math.min(state.layout.height - state.layout.size, point.y - drag.offsetY));
     state.targetId = hitTest(point, drag.block.id)?.id || null;
     drawMap();
-  });
+  }
 
-  canvas.addEventListener("pointerup", event => {
+  function finishWorldPointerDrag(event) {
     if (!state.drag || state.drag.pointerId !== event.pointerId) return;
     const drag = state.drag;
+    drag.lastClientX = event.clientX;
+    drag.lastClientY = event.clientY;
     const point = canvasPoint(event);
     const target = hitTest(point, drag.block.id);
-    const droppedInTrash = drag.moved && pointerIsOverTrash(event.clientX, event.clientY);
+    const droppedInTopPanel = drag.moved && pointerIsOverTopPanel(event.clientX, event.clientY);
     state.drag = null;
     state.targetId = null;
-    trashButton.classList.remove("drop-ready");
     if (!drag.moved) {
       selectBlock(drag.block);
+      resumeActiveMovementAfterDrag(drag.block);
       return;
     }
-    if (droppedInTrash) {
+    if (droppedInTopPanel) {
       discardBlock(drag.block);
       return;
     }
     if (target && combine(target, drag.block)) {
-      startActiveMovement();
+      resumeActiveMovementAfterDrag(target);
       return;
     }
     if (dropInClearing(drag.block, drag.block.x, drag.block.y)) {
@@ -1022,24 +1497,38 @@
       setStatus(target
         ? "Those squares do not combine; the dragged clay was placed in the clearing."
         : "Clay placed in the clearing.");
-      startActiveMovement();
+      resumeActiveMovementAfterDrag(drag.block);
       return;
     }
     drag.block.x = drag.startX;
     drag.block.y = drag.startY;
     drawMap();
     setStatus("The clearing is full; there is no open space for that clay.");
-  });
+    resumeActiveMovementAfterDrag(drag.block);
+  }
 
-  canvas.addEventListener("pointercancel", () => {
+  function cancelWorldPointerDrag(event) {
     if (!state.drag) return;
-    state.drag.block.x = state.drag.startX;
-    state.drag.block.y = state.drag.startY;
+    if (event.pointerId !== undefined && state.drag.pointerId !== event.pointerId) return;
+    const drag = state.drag;
+    const clientX = Number.isFinite(event.clientX) ? event.clientX : drag.lastClientX;
+    const clientY = Number.isFinite(event.clientY) ? event.clientY : drag.lastClientY;
     state.drag = null;
     state.targetId = null;
-    trashButton.classList.remove("drop-ready");
+    if (drag.moved && pointerIsOverTopPanel(clientX, clientY)) {
+      discardBlock(drag.block);
+      return;
+    }
+    drag.block.x = drag.startX;
+    drag.block.y = drag.startY;
     drawMap();
-  });
+    resumeActiveMovementAfterDrag(state.blocks.find(block => hasActivePrototypeBehavior(block)));
+  }
+
+  window.addEventListener("pointermove", moveWorldPointerDrag, { passive: false });
+  window.addEventListener("pointerup", finishWorldPointerDrag);
+  window.addEventListener("pointercancel", cancelWorldPointerDrag);
+  canvas.addEventListener("lostpointercapture", cancelWorldPointerDrag);
 
   canvas.addEventListener("keydown", event => {
     if (!state.blocks.length) return;
@@ -1059,29 +1548,6 @@
       renderDetail();
       drawMap();
     }
-  });
-
-  resetButton.addEventListener("click", () => {
-    stopActiveMovement();
-    state.blocks = makeInitialBlocks();
-    state.selectedId = null;
-    state.focusedId = null;
-    state.drag = null;
-    state.targetId = null;
-    shuffle(state.blocks);
-    arrangeBlocks();
-    renderDetail();
-    drawMap();
-    setStatus("Board reset.");
-  });
-
-  trashButton.addEventListener("click", () => {
-    const selected = state.blocks.find(block => block.id === state.selectedId);
-    if (!selected) {
-      setStatus("Select a clay square or drag one to the bin to discard it.");
-      return;
-    }
-    discardBlock(selected);
   });
 
   window.addEventListener("resize", resizeMap);

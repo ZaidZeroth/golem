@@ -25,26 +25,20 @@ body {
     var(--night);
 }
 button { font: inherit; }
-.page-shell { width: min(100% - 36px, 1020px); margin: 0 auto; padding: 28px 0 42px; }
-.page-header { display: flex; align-items: center; justify-content: space-between; gap: 24px; margin-bottom: 16px; }
+.page-shell { width: min(100% - 36px, 1020px); margin: 0 auto; padding: 28px 0 42px; zoom: 0.9; }
 h1, h2, p { margin-top: 0; }
 h1 { margin: 0; font-family: "Creepster", Georgia, serif; font-size: clamp(2.1rem, 6vw, 3.3rem); font-weight: 400; letter-spacing: .04em; line-height: 1; }
 h2 { margin: 0; font-family: "Creepster", Georgia, serif; font-size: clamp(1.2rem, 3vw, 1.5rem); font-weight: 400; }
-.reset-button { flex: 0 0 auto; min-height: 46px; padding: 0 18px; border: 1px solid #78836f; border-radius: 999px; color: var(--ink); background: #313a33; font-weight: 750; cursor: pointer; }
-.reset-button:hover { background: #3c4b3e; }
-.trash-button { min-height: 46px; padding: 0 15px; border: 1px dashed #aa7b70; border-radius: 12px; color: #ffe5da; background: #3c2d30; font-family: "Creepster", Georgia, serif; font-size: 1.05rem; cursor: pointer; transition: background-color .15s, border-color .15s, transform .15s; }
-.trash-button:hover, .trash-button:focus-visible { border-color: #edb29c; background: #58363a; }
-.trash-button.drop-ready { border-color: #ffd18f; background: #86533b; transform: scale(1.06); box-shadow: 0 0 18px rgb(255 192 121 / 42%); }
 .workbench { overflow: hidden; border: 1px solid var(--line); border-radius: 22px; background: var(--panel); box-shadow: var(--shadow); }
-.element-bank { padding: 12px 16px 16px; border-bottom: 1px solid #353947; background: linear-gradient(135deg, #27312a, #252631); }
-.element-bank-controls { display: flex; justify-content: flex-end; gap: 8px; margin-bottom: 9px; }
-.element-bank-grid { display: flex; flex-wrap: wrap; gap: 7px; }
-.element-token { position: relative; display: inline-flex; flex: 0 0 var(--world-cell-size, 56px); align-items: center; justify-content: center; width: var(--world-cell-size, 56px); height: var(--world-cell-size, 56px); padding: 0; overflow: visible; border: 2px solid transparent; border-radius: 4px; color: #fff7e7; background: transparent; cursor: grab; touch-action: none; }
+.visually-hidden-game-controls { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); clip-path: inset(50%); white-space: nowrap; }
+.visually-hidden-game-controls:focus-within { z-index: 4; width: auto; height: auto; margin: 0; padding: 8px; overflow: visible; clip: auto; clip-path: none; background: #20242e; }
+.element-token { position: relative; display: inline-flex; flex: 0 0 var(--world-cell-size, 56px); align-items: center; justify-content: center; width: var(--world-cell-size, 56px); height: var(--world-cell-size, 56px); padding: 0; overflow: visible; border: 2px solid transparent; border-radius: 4px; color: #fff7e7; background: transparent; cursor: grab; touch-action: none; user-select: none; }
 .element-token-art { position: absolute; top: 50%; left: 50%; width: var(--world-clay-size, 50px); height: var(--world-clay-size, 50px); object-fit: contain; transform: translate(-50%, -50%); pointer-events: none; }
 .element-token-label { position: relative; z-index: 1; max-width: calc(100% - 8px); color: #fff7e7; font-family: "Creepster", Georgia, serif; line-height: .9; text-align: center; white-space: nowrap; -webkit-text-stroke: 1px rgb(18 19 21 / 92%); paint-order: stroke fill; text-shadow: 0 0 2px rgb(255 247 224 / 80%); pointer-events: none; }
 .element-token:hover, .element-token:focus-visible { border-color: #f4c27a; outline: none; filter: brightness(1.1); }
 .element-token:active { cursor: grabbing; }
-.map-board { overflow: hidden; padding: 12px; border-block: 1px solid #353947; background-color: #18201b; }
+.element-token.drag-source { opacity: .38; }
+.map-board { position: relative; overflow: hidden; padding: 12px; border-block: 1px solid #353947; background-color: #18201b; }
 #map-canvas { display: block; width: 100%; outline: none; touch-action: none; cursor: grab; }
 #map-canvas:active { cursor: grabbing; }
 #map-canvas:focus-visible { outline: 3px solid var(--ember); outline-offset: -4px; }
@@ -56,15 +50,16 @@ h2 { margin: 0; font-family: "Creepster", Georgia, serif; font-size: clamp(1.2re
 .detail-reading { color: #e0d4c0 !important; }
 .reading-status { display: block; margin-top: 6px; color: #b7a0ce; font-size: .72rem; line-height: 1.4; }
 .status { min-height: 1.4em; margin: 12px 2px 0; color: #e0d4c0; font-size: .88rem; line-height: 1.45; }
+.coming-soon-panel { margin-top: 18px; padding: 16px 18px 18px; border: 1px solid var(--line); border-radius: 18px; background: linear-gradient(140deg, rgb(36 42 38 / 88%), rgb(32 36 46 / 96%)); box-shadow: var(--shadow); }
+.coming-soon-panel h2 { margin-bottom: 12px; color: #f1ebdf; }
+.coming-soon-elements { display: flex; flex-wrap: wrap; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.coming-soon-elements li { display: grid; width: 56px; height: 56px; place-items: center; background: url("assets/golem-clay-lump-ink-outline-64px.png") center / contain no-repeat; color: #fff7e7; font-family: "Creepster", Georgia, serif; font-size: .98rem; line-height: .9; -webkit-text-stroke: .8px rgb(18 19 21 / 92%); paint-order: stroke fill; text-shadow: 0 0 2px rgb(255 247 224 / 80%); }
 @media (max-width: 640px) {
   .page-shell { width: min(100% - 22px, 1020px); padding-top: 18px; }
-  .page-header { margin-bottom: 12px; }
-  .trash-button, .reset-button { min-height: 40px; padding-inline: 11px; }
-  .element-bank-controls { margin-bottom: 8px; }
   .map-board { padding: 8px; }
-  .element-bank { padding: 12px 10px; }
   .detail-panel { padding: 18px 17px; }
   .detail-list { grid-template-columns: 1fr; gap: 14px; }
+  .coming-soon-panel { padding: 14px; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; }
