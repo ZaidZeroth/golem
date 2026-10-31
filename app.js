@@ -7,6 +7,12 @@
   const detail = document.querySelector("#detail-content");
   const status = document.querySelector("#status");
   const resetButton = document.querySelector("#reset-button");
+  const worldImage = new Image();
+  worldImage.src = "assets/golem-world-blank.png";
+  worldImage.addEventListener("load", () => drawMap());
+  const clayImage = new Image();
+  clayImage.src = "assets/golem-clay-lump-64px.png";
+  clayImage.addEventListener("load", () => drawMap());
   const elementWords = [
     "RED", "GREEN", "BLUE", "BLOCK", "NOT", "AND", "OR", "RIGHT", "UP",
     "WHILE", "DO", "HAND", "EYE", "FEET", "IN", "ME", "FIT"
@@ -33,9 +39,9 @@
   }
 
   const elementMeanings = {
-    RED: { id: "red", category: "filter", label: "RED", reading: "red pigment" },
-    GREEN: { id: "green", category: "filter", label: "GREEN", reading: "green pigment" },
-    BLUE: { id: "blue", category: "filter", label: "BLUE", reading: "blue pigment" },
+    RED: { id: "red", category: "filter", label: "RED", reading: "red pigment", colorMask: 1 },
+    GREEN: { id: "green", category: "filter", label: "GREEN", reading: "green pigment", colorMask: 2 },
+    BLUE: { id: "blue", category: "filter", label: "BLUE", reading: "blue pigment", colorMask: 4 },
     BLOCK: { id: "block", category: "filter", label: "BLOCK", reading: "a clay block" },
     RIGHT: { id: "right", category: "filter", label: "RIGHT", reading: "the right direction" },
     UP: { id: "up", category: "filter", label: "UP", reading: "the upward direction" },
@@ -66,13 +72,20 @@
     };
   }
 
+  const mixedColors = {
+    3: { id: "yellow", label: "YELLOW", reading: "yellow from red and green color channels" },
+    5: { id: "magenta", label: "MAGENTA", reading: "magenta from red and blue color channels" },
+    6: { id: "cyan", label: "CYAN", reading: "cyan from green and blue color channels" },
+    7: { id: "white", label: "WHITE", reading: "white from red, green, and blue color channels" }
+  };
+
   function faceLabel(expression) {
-    if (expression.type === "element") return elementMeanings[expression.word]?.label || expression.word;
-    return describe(expression).label;
+    if (expression.type === "element") return (elementMeanings[expression.word]?.label || expression.word).toLowerCase();
+    return describe(expression).label.toLowerCase();
   }
 
   function construction(expression) {
-    if (expression.type === "element") return expression.word;
+    if (expression.type === "element") return expression.word.toLowerCase();
     return `(${construction(expression.left)} + ${construction(expression.right)})`;
   }
 
@@ -82,7 +95,16 @@
 
   function combineMeaning(left, right, leftExpression, rightExpression) {
     const ids = pair(left.id, right.id);
+    if (Number.isInteger(left.colorMask) && Number.isInteger(right.colorMask)) {
+      const colorMask = left.colorMask | right.colorMask;
+      if (colorMask === left.colorMask && colorMask === right.colorMask) return null;
+      const mixed = mixedColors[colorMask];
+      if (mixed) return provisionalMeaning(mixed.id, "color-state", mixed.label, mixed.reading, { colorMask });
+    }
     const notRedIds = pair("not", "red");
+    if (ids === pair("do", "red")) {
+      return provisionalMeaning("be-red", "motive", "BE RED", "be red", { colorIntentMask: 1 });
+    }
     if (ids === notRedIds) {
       return provisionalMeaning("not-red", "filter", "NOT RED", "clay that does not contain red pigment");
     }
@@ -102,10 +124,10 @@
       return provisionalMeaning("right-after-double-not", "filter", "RIGHT", "the right direction after double negation");
     }
     if (ids === pair("do-eye", "not") || ids === pair("do", "not-eye")) {
-      return provisionalMeaning("do-close-eyes", "motive", "DO CLOSE EYES", "close the golem's eyes");
+      return provisionalMeaning("do-not-look", "motive", "DON'T LOOK", "don't look", { source: "proposed language reading; runtime effect is undefined" });
     }
     if (ids === pair("not", "eye")) {
-      return provisionalMeaning("not-eye", "sense-source", "NOT SEE", "eyes closed", { senseText: "eyes closed" });
+      return provisionalMeaning("not-eye", "sense-source", "NOT EYE", "the negated EYE expression; its reading depends on the outer operator", { senseText: "not seeing" });
     }
     if ((left.id === "left" || left.id === "right") && right.id === "hand" ||
         (right.id === "left" || right.id === "right") && left.id === "hand") {
@@ -137,6 +159,7 @@
       const sense = left.id === "while" ? right : left;
       const whilePhrases = {
         eye: "while seeing",
+        "not-eye": "while not seeing",
         hand: "while touching",
         fist: "while holding",
         fit: "while the held pieces fit",
@@ -164,7 +187,7 @@
         fist: ["GRAB", "grab a piece"],
         red: ["ADD RED", "add red pigment"],
         eye: ["OPEN EYES", "open the eyes"],
-        "not-eye": ["CLOSE EYES", "close the eyes"],
+        "not-eye": ["DON'T LOOK", "don't look"],
         combine: ["COMBINE", "combine the blocks held in both hands"],
         "left-hand": ["DROP LEFT", "drop what is in the left hand"],
         "right-hand": ["DROP RIGHT", "drop what is in the right hand"],
@@ -212,6 +235,94 @@
     if (!meaning) return null;
     if (meaning.id === "right-after-double-not") return element("RIGHT");
     return compound(leftExpression, rightExpression, meaning);
+  }
+
+  function buildRecipeExamples() {
+    const words = Object.fromEntries(elementWords.map(word => [word, element(word)]));
+    const join = (left, right) => left && right ? resultExpression(left, right) : null;
+    const recipes = new Set();
+    const bothOrders = (left, right) => {
+      for (const [first, second] of [[left, right], [right, left]]) {
+        const result = join(first, second);
+        if (result) recipes.add(`${faceLabel(first)} + ${faceLabel(second)} → ${faceLabel(result)}`);
+      }
+    };
+
+    const notRed = join(words.NOT, words.RED);
+    const yellow = join(words.RED, words.GREEN);
+    const magenta = join(words.RED, words.BLUE);
+    const cyan = join(words.GREEN, words.BLUE);
+    const fist = join(words.NOT, words.HAND);
+    const combine = join(words.HAND, words.HAND);
+    const left = join(words.RIGHT, words.NOT);
+    const notEye = join(words.NOT, words.EYE);
+    const seeRed = join(words.EYE, words.RED);
+    const seeNotRed = join(words.EYE, notRed);
+    const whileEye = join(words.WHILE, words.EYE);
+    const whileHand = join(words.WHILE, words.HAND);
+    const whileFit = join(words.WHILE, words.FIT);
+    const whileHandAnd = join(whileHand, words.AND);
+    const doFist = join(words.DO, fist);
+    const inMe = join(words.IN, words.ME);
+
+    [
+      [words.RED, words.GREEN],
+      [words.RED, words.BLUE],
+      [words.GREEN, words.BLUE],
+      [magenta, words.GREEN],
+      [yellow, words.BLUE],
+      [cyan, words.RED],
+      [words.DO, words.RED],
+      [words.NOT, words.RED],
+      [words.NOT, words.HAND],
+      [words.NOT, fist],
+      [words.HAND, words.HAND],
+      [words.RIGHT, words.NOT],
+      [left, words.NOT],
+      [words.NOT, words.EYE],
+      [words.DO, words.EYE],
+      [words.DO, notEye],
+      [words.RIGHT, words.HAND],
+      [left, fist],
+      [words.EYE, words.RED],
+      [words.EYE, notRed],
+      [words.EYE, words.RIGHT],
+      [words.WHILE, words.EYE],
+      [words.WHILE, seeRed],
+      [words.WHILE, seeNotRed],
+      [words.WHILE, words.HAND],
+      [words.WHILE, fist],
+      [words.WHILE, words.FIT],
+      [words.WHILE, notRed],
+      [words.WHILE, seeNotRed],
+      [words.WHILE, join(words.RIGHT, words.HAND)],
+      [whileHand, words.AND],
+      [whileHandAnd, whileFit],
+      [whileEye, words.OR],
+      [join(whileEye, words.OR), whileHand],
+      [words.DO, words.HAND],
+      [words.DO, fist],
+      [words.DO, words.RED],
+      [words.DO, words.EYE],
+      [words.DO, notEye],
+      [words.DO, combine],
+      [words.DO, join(left, words.HAND)],
+      [words.DO, join(words.RIGHT, fist)],
+      [words.IN, words.ME],
+      [inMe, notRed],
+      [whileHand, doFist]
+    ].forEach(([first, second]) => bothOrders(first, second));
+
+    return [...recipes].sort((a, b) => a.localeCompare(b));
+  }
+
+  function renderRecipes() {
+    const list = document.querySelector("#recipe-list");
+    for (const recipe of buildRecipeExamples()) {
+      const item = document.createElement("li");
+      item.textContent = recipe;
+      list.append(item);
+    }
   }
 
   function plainLanguage(expression) {
@@ -275,20 +386,57 @@
   function drawMap() {
     const { width, height, size } = state.layout;
     context.clearRect(0, 0, width, height);
+    if (worldImage.complete && worldImage.naturalWidth) {
+      const scale = Math.max(width / worldImage.naturalWidth, height / worldImage.naturalHeight);
+      const drawWidth = worldImage.naturalWidth * scale;
+      const drawHeight = worldImage.naturalHeight * scale;
+      context.drawImage(worldImage, (width - drawWidth) / 2, (height - drawHeight) / 2, drawWidth, drawHeight);
+    } else {
+      context.fillStyle = "#263328";
+      context.fillRect(0, 0, width, height);
+    }
     for (const block of state.blocks) {
       const selected = block.id === state.selectedId;
       const focused = block.id === state.focusedId;
       const target = block.id === state.targetId;
-      context.fillStyle = target ? "#66543b" : "#38453b";
-      context.strokeStyle = selected ? "#e5a66a" : focused ? "#d7b675" : "#98ae83";
-      context.lineWidth = selected || focused || target ? 3 : 2;
-      context.fillRect(block.x, block.y, size, size);
-      context.strokeRect(block.x + 1, block.y + 1, size - 2, size - 2);
-      context.fillStyle = "#f5ecd9";
+      if (clayImage.complete && clayImage.naturalWidth) {
+        context.drawImage(clayImage, block.x, block.y, size, size);
+        const colorMask = describe(block.contents).colorMask;
+        const tint = {
+          1: "rgb(190 55 48 / 55%)",
+          2: "rgb(68 143 73 / 55%)",
+          3: "rgb(222 192 55 / 58%)",
+          4: "rgb(65 112 193 / 55%)",
+          5: "rgb(196 67 157 / 58%)",
+          6: "rgb(61 183 184 / 58%)",
+          7: "rgb(238 239 228 / 72%)"
+        }[colorMask] || "rgb(48 51 57 / 82%)";
+        context.save();
+        context.globalCompositeOperation = "source-atop";
+        context.fillStyle = tint;
+        context.fillRect(block.x, block.y, size, size);
+        context.restore();
+      } else {
+        context.fillStyle = "#aaa7a0";
+        context.fillRect(block.x, block.y, size, size);
+      }
+      if (target || selected || focused) {
+        context.strokeStyle = selected ? "#f4c27a" : target ? "#ffe19a" : "#e8dfc9";
+        context.lineWidth = selected || target ? 3 : 2;
+        context.strokeRect(block.x + 1, block.y + 1, size - 2, size - 2);
+      }
+      context.fillStyle = "#fff7e7";
+      context.strokeStyle = "rgb(18 19 21 / 92%)";
+      context.lineWidth = 2.4;
       context.textAlign = "center";
       context.textBaseline = "middle";
-      context.font = `800 ${faceFontSize(faceLabel(block.contents), size)}px system-ui, sans-serif`;
-      context.fillText(faceLabel(block.contents), block.x + size / 2, block.y + size / 2, size - 8);
+      context.font = `800 ${faceFontSize(faceLabel(block.contents), size)}px "Atkinson Hyperlegible Next", system-ui, sans-serif`;
+      context.shadowColor = "rgb(255 247 224 / 90%)";
+      context.shadowBlur = 2;
+      const label = faceLabel(block.contents);
+      context.strokeText(label, block.x + size / 2, block.y + size / 2, size - 8);
+      context.fillText(label, block.x + size / 2, block.y + size / 2, size - 8);
+      context.shadowBlur = 0;
     }
   }
 
@@ -461,11 +609,12 @@
     arrangeBlocks();
     renderDetail();
     drawMap();
-    setStatus("Map reshuffled. Try combining NOT with RED.");
+    setStatus("Board reset.");
   });
 
   window.addEventListener("resize", resizeMap);
   shuffle(state.blocks);
   resizeMap();
   renderDetail();
+  renderRecipes();
 })();
