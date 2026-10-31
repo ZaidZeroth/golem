@@ -8,10 +8,10 @@
   const detail = document.querySelector("#detail-content");
   const status = document.querySelector("#status");
   const worldImage = new Image();
-  worldImage.src = "assets/golem-world-blank.png";
+  worldImage.src = "assets/golem-world-muddy-manx-field.png";
   worldImage.addEventListener("load", () => drawMap());
   const clayImage = new Image();
-  clayImage.src = "assets/golem-clay-lump-ink-outline-64px.png";
+  clayImage.src = "assets/golem-clay-lump-ink-outline-256px.png";
   clayImage.addEventListener("load", () => {
     // Tint requests can happen before this image loads, especially while the
     // initial palette is being built. Discard those transparent placeholders.
@@ -19,35 +19,51 @@
     drawMap();
     renderElementBank();
   });
+  const clodImage = new Image();
+  clodImage.src = "assets/golem-clay-cube-block-256px.png";
+  clodImage.addEventListener("load", () => {
+    clodTintCache.clear();
+    drawMap();
+    renderElementBank();
+  });
   const miniGolemImage = new Image();
-  miniGolemImage.src = "assets/golem-mini-golem-front-variant-64px.png";
-  miniGolemImage.addEventListener("load", () => drawMap());
+  miniGolemImage.src = "assets/golem-mini-golem-front-256px.png";
+  miniGolemImage.addEventListener("load", () => {
+    miniGolemTintCache.clear();
+    drawMap();
+  });
   const elementSpritePaths = {
-    eye: "assets/golem-clay-eye-64px.png",
-    hand: "assets/golem-clay-hand-open-64px.png",
-    fist: "assets/golem-clay-fist-64px.png",
-    feet: "assets/golem-clay-feet-64px.png",
-    left: "assets/golem-clay-arrow-left-64px.png",
-    right: "assets/golem-clay-arrow-right-64px.png",
-    up: "assets/golem-clay-arrow-up-64px.png"
+    eye: "assets/golem-clay-eye-256px.png",
+    "not-eye": "assets/golem-clay-eye-closed-256px.png",
+    hand: "assets/golem-clay-hand-left-256px.png",
+    "left-hand": "assets/golem-clay-hand-left-256px.png",
+    "right-hand": "assets/golem-clay-hand-left-256px.png",
+    fist: "assets/golem-clay-fist-closed-256px.png",
+    "left-fist": "assets/golem-clay-fist-closed-256px.png",
+    "right-fist": "assets/golem-clay-fist-closed-256px.png",
+    feet: "assets/golem-clay-feet-256px.png",
+    left: "assets/golem-clay-arrow-right-256px.png",
+    right: "assets/golem-clay-arrow-right-256px.png",
+    up: "assets/golem-clay-arrow-right-256px.png",
+    down: "assets/golem-clay-arrow-right-256px.png"
   };
+  elementSpritePaths.clod = "assets/golem-clay-cube-block-256px.png";
+  const elementTintCache = new Map();
   const elementSprites = Object.fromEntries(Object.entries(elementSpritePaths).map(([meaning, path]) => {
     const sprite = new Image();
     sprite.src = path;
-    sprite.addEventListener("load", () => drawMap());
+    sprite.addEventListener("load", () => {
+      elementTintCache.clear();
+      drawMap();
+      renderElementBank();
+    });
     return [meaning, sprite];
   }));
   const clayTintCache = new Map();
+  const clodTintCache = new Map();
   const miniGolemTintCache = new Map();
   const clearingPolygon = [
-    [0.24, 0.31], [0.31, 0.26], [0.39, 0.24], [0.44, 0.27],
-    [0.45, 0.32], [0.42, 0.36], [0.47, 0.39], [0.54, 0.36],
-    [0.62, 0.39], [0.72, 0.45], [0.76, 0.50], [0.72, 0.55],
-    [0.65, 0.56], [0.58, 0.53], [0.52, 0.50], [0.46, 0.47],
-    [0.42, 0.51], [0.41, 0.57], [0.46, 0.63], [0.55, 0.67],
-    [0.65, 0.65], [0.73, 0.69], [0.76, 0.75], [0.69, 0.80],
-    [0.57, 0.81], [0.45, 0.78], [0.35, 0.72], [0.28, 0.66],
-    [0.23, 0.59], [0.21, 0.51], [0.22, 0.41]
+    [0.02, 0.34], [0.98, 0.34], [0.98, 0.96], [0.02, 0.96]
   ];
   const elementWords = [
     "RED", "GREEN", "BLUE", "NOT", "RIGHT", "UP", "WHILE", "DO",
@@ -55,14 +71,24 @@
   ];
   const pair = (left, right) => [left, right].sort().join("\u0000");
   const activeSenseIds = [
-    "while-eye", "while-hand", "not-see", "not-touch",
+    "while-eye", "while-hand", "not-see", "not-touch", "not-hold",
+    "while-left-hand", "while-right-hand",
     "while-fist", "while-left-fist", "while-right-fist",
-    "while-sight-left", "while-sight-right", "while-sight-up",
-    "sight-left", "sight-right", "sight-up",
+    "while-sight-left", "while-sight-right", "while-sight-up", "while-sight-down",
+    ...[1, 2, 3, 4, 5, 6, 7].map(mask => `while-sight-${({
+      1: "red", 2: "green", 3: "yellow", 4: "blue",
+      5: "magenta", 6: "cyan", 7: "white"
+    })[mask]}`),
+    "sight-left", "sight-right", "sight-up", "sight-down",
     ...[1, 2, 3, 4, 5, 6, 7].map(mask => `while-touch-${({ 1: "red", 2: "green", 3: "yellow", 4: "blue", 5: "magenta", 6: "cyan", 7: "white" })[mask]}`),
     "while-touch-hand-clod", "while-touch-red-clod", "while-touch-green-clod",
     "while-touch-blue-clod", "while-touch-yellow-clod", "while-touch-magenta-clod",
     "while-touch-cyan-clod", "while-touch-white-clod"
+  ];
+  const activeResponseIds = [
+    "do-move-left", "do-move-right", "do-move-up", "do-move-down", "do-move-random",
+    "do-fist", "do-left-fist", "do-right-fist",
+    "do-hand", "do-left-hand", "do-right-hand"
   ];
 
   function element(word) {
@@ -138,6 +164,34 @@
     return { id, category, label, reading, certainty: "provisional", ...extra };
   }
 
+  function literalClodMeaning(contents) {
+    const contentColor = contents.colorIntentMask ?? contents.colorMask;
+    const isColored = Number.isInteger(contentColor);
+    const isHand = contents.id === "hand";
+    const isClodOfClod = contents.id === "clod" || contents.clodLiteral;
+    const contentLabel = contents.id === "clod"
+      ? "CLOD"
+      : contents.label || "clay";
+    const label = isClodOfClod ? `CLOD OF ${contentLabel}` : `${contentLabel} CLOD`;
+    const reading = isHand
+      ? "a hand clod"
+      : isColored
+        ? `a ${contents.label.toLowerCase()} clod`
+        : `a clay clod embodying ${contents.reading || contentLabel.toLowerCase()}`;
+    return provisionalMeaning(
+      isHand ? "hand-clod" : isColored ? `${contents.id}-clod` : `clod-of-${contents.id}`,
+      "object-filter",
+      label,
+      reading,
+      {
+        objectKind: "clod",
+        clodLiteral: true,
+        ...(isHand ? { touchObjectKind: "hand" } : {}),
+        ...(isColored ? { colorMask: contentColor } : {})
+      }
+    );
+  }
+
   function combineMeaning(left, right, leftExpression, rightExpression) {
     const ids = pair(left.id, right.id);
     if (Number.isInteger(left.colorMask) && Number.isInteger(right.colorMask)) {
@@ -146,49 +200,40 @@
       const mixed = mixedColors[colorMask];
       if (mixed) return provisionalMeaning(mixed.id, "color-state", mixed.label, mixed.reading, { colorMask });
     }
-    const colorBlockColor = left.id === "clod" ? right : right.id === "clod" ? left : null;
-    if (colorBlockColor && Number.isInteger(colorBlockColor.colorMask)) {
-      return provisionalMeaning(
-        `${colorBlockColor.id}-clod`, "object-filter", `${colorBlockColor.label} CLOD`,
-        `a ${colorBlockColor.label.toLowerCase()} clod`,
-        { objectKind: "clod", colorMask: colorBlockColor.colorMask }
-      );
-    }
-    if (ids === pair("hand", "clod")) {
-      return provisionalMeaning("hand-clod", "object-filter", "HAND CLOD", "a hand clod", { objectKind: "hand" });
-    }
-    if (ids === pair("feet", "left")) {
-      return provisionalMeaning("left-feet", "action-source", "LEFT FEET", "feet oriented to move left");
-    }
-    if (ids === pair("feet", "right")) {
-      return provisionalMeaning("right-feet", "action-source", "RIGHT FEET", "feet oriented to move right");
-    }
-    if (ids === pair("do", "left-feet")) {
-      return provisionalMeaning(
-        "do-move-left", "motive", "MOVE LEFT",
-        "move slowly to the left continuously; without a WHILE condition, keep attempting as if WHILE TRUE"
-      );
-    }
-    if (ids === pair("do", "right-feet")) {
-      return provisionalMeaning(
-        "do-move-right", "motive", "MOVE RIGHT",
-        "move slowly to the right continuously; provisional owner-requested prototype behavior"
-      );
-    }
+    if (left.id === "clod") return literalClodMeaning(right);
+    if (right.id === "clod") return literalClodMeaning(left);
     if (ids === pair("do", "feet")) {
       return provisionalMeaning(
         "do-move-random", "motive", "MOVE",
         "move slowly in a random cardinal direction, changing direction occasionally; tentative prototype interpretation"
       );
     }
-    const movementDirection = ["left", "right", "up"].find(direction =>
+    const movementDirection = ["left", "right", "up", "down"].find(direction =>
       ids === pair("do-move-random", direction)
     );
     if (movementDirection) {
-      const directionWords = { left: "left", right: "right", up: "up" };
+      const directionWords = { left: "left", right: "right", up: "up", down: "down" };
       return provisionalMeaning(
         `do-move-${movementDirection}`, "motive", `MOVE ${movementDirection.toUpperCase()}`,
         `move slowly ${directionWords[movementDirection]}; directional prototype behavior`
+      );
+    }
+    const dropDirection = ["left", "right"].find(direction =>
+      ids === pair("do-hand", direction)
+    );
+    if (dropDirection) {
+      return provisionalMeaning(
+        `do-${dropDirection}-hand`, "motive", `DROP ${dropDirection.toUpperCase()}`,
+        `drop the clay held in the ${dropDirection} hand`
+      );
+    }
+    const grabDirection = ["left", "right"].find(direction =>
+      ids === pair("do-fist", direction)
+    );
+    if (grabDirection) {
+      return provisionalMeaning(
+        `do-${grabDirection}-fist`, "motive", `GRAB ${grabDirection.toUpperCase()}`,
+        `grab with the ${grabDirection} hand`
       );
     }
     const notRedIds = pair("not", "red");
@@ -198,17 +243,23 @@
     if (ids === notRedIds) {
       return provisionalMeaning("not-red", "filter", "NOT RED", "clay that does not contain red pigment");
     }
+    if (ids === pair("not", "right-hand")) {
+      return provisionalMeaning("left-hand", "sense-source", "LEFT HAND", "left hand", { senseText: "touch" });
+    }
+    if (ids === pair("not", "left-hand")) {
+      return provisionalMeaning("right-hand", "sense-source", "RIGHT HAND", "right hand", { senseText: "touch" });
+    }
     if (ids === pair("not", "hand")) {
       return provisionalMeaning("fist", "sense-source", "FIST", "a hand formed into a fist", { senseText: "holding" });
     }
     if (ids === pair("not", "fist")) {
       return provisionalMeaning("hand", "sense-source", "HAND", "a hand opened from a fist", { senseText: "touch" });
     }
-    if (ids === pair("hand", "hand")) {
-      return provisionalMeaning("combine", "motive", "COMBINE", "combine the two hands");
-    }
     if (ids === pair("right", "not")) {
       return provisionalMeaning("left", "filter", "LEFT", "the left direction");
+    }
+    if (ids === pair("not", "up")) {
+      return provisionalMeaning("down", "filter", "DOWN", "the downward direction");
     }
     if (ids === pair("left", "not")) {
       return provisionalMeaning("right-after-double-not", "filter", "RIGHT", "the right direction after double negation");
@@ -231,6 +282,12 @@
         senseText: "not touching any other clay clod"
       });
     }
+    if (ids === pair("not", "while-fist")) {
+      return provisionalMeaning("not-hold", "sense", "NOT HOLD", "while neither hand is holding a clay clod", {
+        senseKind: "hold", negated: true,
+        senseText: "not holding anything"
+      });
+    }
     if ((left.id === "left" || left.id === "right") && right.id === "hand" ||
         (right.id === "left" || right.id === "right") && left.id === "hand") {
       const direction = left.id === "left" || left.id === "right" ? left : right;
@@ -244,26 +301,34 @@
     if (left.id === "eye" && (right.category === "filter" || right.category === "color-state") ||
         right.id === "eye" && (left.category === "filter" || left.category === "color-state")) {
       const filter = left.id === "eye" ? right : left;
-      const direction = ["left", "right", "up"].includes(filter.id) ? filter.id : null;
-      const sightReading = direction
-        ? `seeing something ${direction === "up" ? "above" : `to the ${direction}`}`
-        : `seeing ${Number.isInteger(filter.colorMask) ? `${filter.label.toLowerCase()} pigment` : filter.reading}`;
+      if (["left", "right", "up", "down"].includes(filter.id)) return null;
+      const sightReading = `seeing ${Number.isInteger(filter.colorMask) ? `${filter.label.toLowerCase()} pigment` : filter.reading}`;
       return provisionalMeaning(`sight-${filter.id}`, "sense", `SEE ${filter.label}`, sightReading, {
-        senseKind: "see", senseText: sightReading,
-        ...(direction ? { direction, sightRangeCells: 3 } : {})
+        senseKind: "see", senseText: sightReading
       });
     }
     if ((left.id === "while-eye" && (right.category === "filter" || right.category === "color-state")) ||
         (right.id === "while-eye" && (left.category === "filter" || left.category === "color-state"))) {
       const filter = left.id === "while-eye" ? right : left;
-      const direction = ["left", "right", "up"].includes(filter.id) ? filter.id : null;
+      const direction = ["left", "right", "up", "down"].includes(filter.id) ? filter.id : null;
       const sightReading = direction
-        ? `seeing something ${direction === "up" ? "above" : `to the ${direction}`}`
+        ? `seeing something ${direction === "up" ? "above" : direction === "down" ? "below" : `to the ${direction}`}`
         : `seeing ${Number.isInteger(filter.colorMask) ? `${filter.label.toLowerCase()} pigment` : filter.reading}`;
       return provisionalMeaning(`while-sight-${filter.id}`, "sense", `SEE ${filter.label}`, `while ${sightReading}`, {
         senseKind: "see", senseText: `while ${sightReading}`,
+        ...(Number.isInteger(filter.colorMask) ? { sightColorMask: filter.colorMask } : {}),
         ...(direction ? { direction, sightRangeCells: 3 } : {})
       });
+    }
+    if ((left.id === "while-hand" && ["left", "right"].includes(right.id)) ||
+        (right.id === "while-hand" && ["left", "right"].includes(left.id))) {
+      const direction = left.id === "while-hand" ? right : left;
+      const side = direction.id;
+      return provisionalMeaning(`while-${side}-hand`, "sense", `${side.toUpperCase()} TOUCH`,
+        `while touching with the ${side} hand`, {
+          senseKind: "touch", handSide: side,
+          senseText: `while touching with the ${side} hand`
+        });
     }
     if ((left.id === "while-hand" && (right.category === "filter" || right.category === "color-state")) ||
         (right.id === "while-hand" && (left.category === "filter" || left.category === "color-state"))) {
@@ -321,6 +386,10 @@
           ...(sense.id === "left-fist" ? { handSide: "left" } : {}),
           ...(sense.id === "right-fist" ? { handSide: "right" } : {})
         } : {}),
+        ...(sense.id === "left-hand" || sense.id === "right-hand" ? {
+          senseKind: "touch",
+          handSide: sense.id === "left-hand" ? "left" : "right"
+        } : {}),
         ...(sense.id === "eye" ? { sightRangeCells: 3 } : {})
       });
     }
@@ -332,8 +401,8 @@
         : `while ${sense.senseText || sense.reading}`;
       return provisionalMeaning(`while-${sense.id}`, "sense", sense.label, phrase, { senseText: phrase });
     }
-    if ((left.id === "do" && ["hand", "fist", "red", "eye", "not-eye", "combine", "left-hand", "right-hand", "left-fist", "right-fist"].includes(right.id)) ||
-        (right.id === "do" && ["hand", "fist", "red", "eye", "not-eye", "combine", "left-hand", "right-hand", "left-fist", "right-fist"].includes(left.id))) {
+    if ((left.id === "do" && ["hand", "fist", "red", "eye", "not-eye", "left-hand", "right-hand", "left-fist", "right-fist"].includes(right.id)) ||
+        (right.id === "do" && ["hand", "fist", "red", "eye", "not-eye", "left-hand", "right-hand", "left-fist", "right-fist"].includes(left.id))) {
       const action = left.id === "do" ? right : left;
       const actions = {
         hand: ["DROP", "drop the held piece"],
@@ -341,7 +410,6 @@
         red: ["ADD RED", "add red pigment"],
         eye: ["LOOK", "look"],
         "not-eye": ["DON'T LOOK", "don't look"],
-        combine: ["COMBINE", "combine the clods held in both hands"],
         "left-hand": ["DROP LEFT", "drop what is in the left hand"],
         "right-hand": ["DROP RIGHT", "drop what is in the right hand"],
         "left-fist": ["GRAB LEFT", "grab with the left hand"],
@@ -358,18 +426,32 @@
       const pattern = left.id === "inside-me" ? right : left;
       return provisionalMeaning(`inside-${pattern.id}`, "inspect", `IN ME ${pattern.label}`, `whether ${pattern.reading} occurs anywhere inside me`);
     }
+    if (left.category === "golem" && right.category === "golem") {
+      const pathways = [...pathwaysForMeaning(left), ...pathwaysForMeaning(right)];
+      if (pathways.length < 2 || pathways.some(pathway => !pathway.behaviorImplemented)) return null;
+      const reading = pathways.map(pathway =>
+        `${pathway.sense.reading.replace(/^while /i, "while ")}, then ${pathway.motive.reading}`
+      ).join("; ");
+      const label = pathways.map(pathway =>
+        `${pathway.sense.label} THEN ${pathway.motive.label}`
+      ).join("; ");
+      return provisionalMeaning("compound-golem", "golem", label, reading, {
+        pathways,
+        behaviorImplemented: true
+      });
+    }
     if ((left.category === "sense" && right.category === "motive") ||
         (right.category === "sense" && left.category === "motive")) {
       const sense = left.category === "sense" ? left : right;
       const motive = left.category === "motive" ? left : right;
       const label = `${sense.label} THEN ${motive.label}`;
       const reading = `${sense.reading}; then ${motive.reading}`;
-      const behaviorImplemented = activeSenseIds.includes(sense.id) &&
-        ["do-move-left", "do-move-right", "do-move-up", "do-move-random"].includes(motive.id);
+      const behaviorImplemented = activeSenseIds.includes(sense.id) && activeResponseIds.includes(motive.id);
       return provisionalMeaning("golem-pair", "golem", label, reading, {
         sense,
         motive,
         behaviorImplemented,
+        pathways: [{ sense, motive, behaviorImplemented }],
         ...(behaviorImplemented ? { sightRangeCells: sense.sightRangeCells || 3 } : {})
       });
     }
@@ -391,12 +473,34 @@
   }
 
   function resultExpression(leftExpression, rightExpression) {
+    const leftMeaning = describe(leftExpression);
+    const rightMeaning = describe(rightExpression);
+    // HOLD is built from WHILE + FIST, and FIST itself contains NOT. Allow
+    // the explicit NOT + HOLD recipe even though this adds a second NOT word.
+    const isNotHold = pair(leftMeaning.id, rightMeaning.id) === pair("not", "while-fist");
+    if (!isNotHold && repeatsOperatorWord(leftExpression, rightExpression)) return null;
     const meaning = combineMeaning(
-      describe(leftExpression), describe(rightExpression), leftExpression, rightExpression
+      leftMeaning, rightMeaning, leftExpression, rightExpression
     );
     if (!meaning) return null;
     if (meaning.id === "right-after-double-not") return element("RIGHT");
     return compound(leftExpression, rightExpression, meaning);
+  }
+
+  function repeatsOperatorWord(leftExpression, rightExpression) {
+    const operatorWord = expression => expression.type === "element" &&
+      elementMeanings[expression.word]?.category === "operator"
+      ? expression.word
+      : null;
+    const containsWord = (expression, word) => expression.type === "element"
+      ? expression.word === word
+      : containsWord(expression.left, word) || containsWord(expression.right, word);
+    const leftOperator = operatorWord(leftExpression);
+    const rightOperator = operatorWord(rightExpression);
+    return Boolean(
+      (leftOperator && containsWord(rightExpression, leftOperator)) ||
+      (rightOperator && containsWord(leftExpression, rightOperator))
+    );
   }
 
   function plainLanguage(expression) {
@@ -669,8 +773,8 @@
     state.layout.rows = Math.floor(height / state.layout.cell);
   }
 
-  function tintedClay(colorMask) {
-    if (clayTintCache.has(colorMask)) return clayTintCache.get(colorMask);
+  function tintedSprite(sourceImage, colorMask, cache) {
+    if (cache.has(colorMask)) return cache.get(colorMask);
     const tint = {
       1: "rgb(190 55 48 / 25%)",
       2: "rgb(68 143 73 / 25%)",
@@ -678,20 +782,73 @@
       4: "rgb(65 112 193 / 25%)",
       5: "rgb(196 67 157 / 25%)",
       6: "rgb(61 183 184 / 25%)",
-      7: "rgb(238 239 228 / 25%)"
-    }[colorMask] || "rgb(48 51 57 / 82%)";
+      7: "rgb(238 239 228 / 32%)"
+    }[colorMask] || "rgb(48 51 57 / 50%)";
     const sprite = document.createElement("canvas");
-    sprite.width = clayImage.naturalWidth || 64;
-    sprite.height = clayImage.naturalHeight || 64;
+    sprite.width = sourceImage.naturalWidth || 64;
+    sprite.height = sourceImage.naturalHeight || 64;
     const spriteContext = sprite.getContext("2d");
-    if (clayImage.complete && clayImage.naturalWidth) {
-      spriteContext.drawImage(clayImage, 0, 0, sprite.width, sprite.height);
+    if (sourceImage.complete && sourceImage.naturalWidth) {
+      spriteContext.drawImage(sourceImage, 0, 0, sprite.width, sprite.height);
       spriteContext.globalCompositeOperation = "source-atop";
       spriteContext.fillStyle = tint;
       spriteContext.fillRect(0, 0, sprite.width, sprite.height);
     }
-    clayTintCache.set(colorMask, sprite);
+    cache.set(colorMask, sprite);
     return sprite;
+  }
+
+  function tintedClay(colorMask) {
+    return tintedSprite(clayImage, colorMask, clayTintCache);
+  }
+
+  function tintedClod(colorMask) {
+    return tintedSprite(clodImage, colorMask, clodTintCache);
+  }
+
+  function tintedElementSprite(id, colorMask = 0) {
+    const sprite = elementSprites[id] ||
+      (["left-hand", "right-hand"].includes(id) ? elementSprites.hand : null) ||
+      (["left-fist", "right-fist"].includes(id) ? elementSprites.fist : null);
+    if (!sprite) return tintedClay(colorMask);
+    const key = `${id}:${colorMask}`;
+    if (elementTintCache.has(key)) return elementTintCache.get(key);
+    const tinted = tintedSprite(sprite, colorMask, new Map());
+    const transform = elementSpriteTransform(id);
+    if (!transform) {
+      elementTintCache.set(key, tinted);
+      return tinted;
+    }
+
+    const oriented = document.createElement("canvas");
+    oriented.width = tinted.width;
+    oriented.height = tinted.height;
+    const orientedContext = oriented.getContext("2d");
+    orientedContext.save();
+    orientedContext.translate(oriented.width / 2, oriented.height / 2);
+    if (transform.mirrorX || transform.mirrorY) {
+      orientedContext.scale(transform.mirrorX ? -1 : 1, transform.mirrorY ? -1 : 1);
+    }
+    if (transform.rotation) orientedContext.rotate(transform.rotation);
+    orientedContext.drawImage(tinted, -tinted.width / 2, -tinted.height / 2);
+    orientedContext.restore();
+    elementTintCache.set(key, oriented);
+    return oriented;
+  }
+
+  function elementSpriteTransform(id) {
+    // The supplied hand/fist art faces left. Keep the explicit left forms
+    // unchanged, while the unsided/default and right forms face right.
+    if (["hand", "right-hand", "fist", "right-fist"].includes(id)) {
+      return { mirrorX: true, mirrorY: false, rotation: 0 };
+    }
+    // The supplied arrow faces right. Mirror top-to-bottom as well as turning
+    // left so the light/shadow edges stay consistent with the other directions.
+    if (id === "left") return { mirrorX: false, mirrorY: true, rotation: Math.PI };
+    if (id === "up") return { mirrorX: false, mirrorY: false, rotation: -Math.PI / 2 };
+    // DOWN is the vertical mirror of the upward arrow.
+    if (id === "down") return { mirrorX: false, mirrorY: true, rotation: -Math.PI / 2 };
+    return null;
   }
 
   function tintedMiniGolem(colorMask) {
@@ -703,9 +860,8 @@
       4: "rgb(65 112 193 / 25%)",
       5: "rgb(196 67 157 / 25%)",
       6: "rgb(61 183 184 / 25%)",
-      7: "rgb(238 239 228 / 25%)"
-    }[colorMask];
-    if (!tint) return miniGolemImage;
+      7: "rgb(238 239 228 / 32%)"
+    }[colorMask] || "rgb(48 51 57 / 50%)";
     const sprite = document.createElement("canvas");
     sprite.width = miniGolemImage.naturalWidth || 64;
     sprite.height = miniGolemImage.naturalHeight || 64;
@@ -740,8 +896,8 @@
       const isCreature = ["sense", "motive", "golem"].includes(meaning.category);
       const sightIsTrue = sensorFor(block) !== null && block.senseActive;
       const colorMask = meaning.colorIntentMask ?? meaning.colorMask ?? 0;
-      const handDirection = meaning.id === "left-hand" ? "left" : meaning.id === "right-hand" ? "right" : null;
-      const elementSprite = elementSprites[meaning.id] || (handDirection ? elementSprites.hand : null);
+      const isClodLiteral = meaning.id === "clod" || meaning.clodLiteral === true || meaning.objectKind === "clod";
+      const elementSprite = elementSprites[meaning.id];
       if (sightIsTrue) {
         const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches === true;
         const pulse = reducedMotion ? 1 : 0.5 + (Math.sin(performance.now() / 260) + 1) * 0.18;
@@ -759,16 +915,11 @@
         context.fill();
         context.restore();
       }
-      if (elementSprite?.complete && elementSprite.naturalWidth) {
-        if (handDirection === "left") {
-          context.save();
-          context.translate(block.x + size, block.y);
-          context.scale(-1, 1);
-          context.drawImage(elementSprite, 0, 0, size, size);
-          context.restore();
-        } else {
-          context.drawImage(elementSprite, block.x, block.y, size, size);
-        }
+      if (isClodLiteral && clodImage.complete && clodImage.naturalWidth) {
+        context.drawImage(tintedClod(colorMask), block.x, block.y, size, size);
+      } else if (elementSprite?.complete && elementSprite.naturalWidth) {
+        const art = tintedElementSprite(meaning.id, colorMask);
+        context.drawImage(art, block.x, block.y, size, size);
       } else if (isCreature && miniGolemImage.complete && miniGolemImage.naturalWidth) {
         context.save();
         // The brighter face and crisp dark features read against both the clay
@@ -785,7 +936,7 @@
         context.fillRect(block.x, block.y, size, size);
       }
       drawHeldItems(block, size);
-      if (["do-move-left", "do-move-right", "do-move-random"].includes(meaning.id)) {
+      if (["do-move-left", "do-move-right", "do-move-up", "do-move-down", "do-move-random"].includes(meaning.id)) {
         context.strokeStyle = "#d4e2a4";
         context.lineWidth = 2;
         context.setLineDash([4, 3]);
@@ -797,19 +948,8 @@
         context.lineWidth = selected || target ? 3 : 2;
         context.strokeRect(block.x + 1, block.y + 1, size - 2, size - 2);
       }
-      context.fillStyle = "#fff7e7";
-      context.strokeStyle = "rgb(18 19 21 / 92%)";
-      context.lineWidth = 2.4;
-      context.textAlign = "center";
-      context.textBaseline = "middle";
-      context.font = `${faceFontSize(faceLabel(block.contents), size)}px "Creepster", Georgia, serif`;
-      context.shadowColor = "rgb(255 247 224 / 90%)";
-      context.shadowBlur = 2;
-      const label = faceLabel(block.contents);
       const labelY = block.y + size * (isCreature ? 0.42 : 0.5);
-      context.strokeText(label, block.x + size / 2, labelY, size - 8);
-      context.fillText(label, block.x + size / 2, labelY, size - 8);
-      context.shadowBlur = 0;
+      drawFaceLabel(context, block.contents, block.x + size / 2, labelY, size);
     }
   }
 
@@ -821,27 +961,28 @@
       if (!heldClod) continue;
       const contents = heldClod.contents;
       const meaning = describe(contents);
-      const sprite = elementSprites[meaning.id] ||
-        (meaning.id === "left-hand" || meaning.id === "right-hand" ? elementSprites.hand : null);
-      const itemSize = size * 0.34;
-      const x = block.x + (side === "left" ? size * 0.02 : size * 0.64);
-      const y = block.y + size * 0.62;
+      const sprite = elementSprites[meaning.id];
+      const colorMask = meaning.colorIntentMask ?? meaning.colorMask ?? 0;
+      const isClodLiteral = meaning.id === "clod" || meaning.clodLiteral === true || meaning.objectKind === "clod";
+      // Held clods should read clearly over the golem's hands. The previous
+      // 34% overlay was too small; 51% is a 50% increase and stays within the
+      // golem tile when anchored to its lower edge.
+      const itemSize = size * 0.51;
+      const x = block.x + (side === "left" ? size * 0.02 : size * 0.47);
+      const y = block.y + size * 0.48;
       context.save();
       context.globalAlpha = 0.96;
-      if (sprite?.complete && sprite.naturalWidth) {
-        if (meaning.id === "left-hand") {
-          context.translate(x + itemSize, y);
-          context.scale(-1, 1);
-          context.drawImage(sprite, 0, 0, itemSize, itemSize);
-        } else {
-          context.drawImage(sprite, x, y, itemSize, itemSize);
-        }
+      if (isClodLiteral && clodImage.complete && clodImage.naturalWidth) {
+        context.drawImage(tintedClod(colorMask), x, y, itemSize, itemSize);
+      } else if (sprite?.complete && sprite.naturalWidth) {
+        const art = tintedElementSprite(meaning.id, colorMask);
+        context.drawImage(art, x, y, itemSize, itemSize);
       } else {
-        const art = tintedClay(meaning.colorIntentMask ?? meaning.colorMask ?? 0);
+        const art = tintedClay(colorMask);
         context.drawImage(art, x, y, itemSize, itemSize);
       }
       const label = faceLabel(contents);
-      context.font = `bold ${Math.max(6, size * 0.105)}px "Atkinson Hyperlegible Next", sans-serif`;
+      context.font = `bold ${Math.max(6, itemSize * 0.31)}px "Atkinson Hyperlegible Next", sans-serif`;
       context.textAlign = "center";
       context.textBaseline = "middle";
       context.lineWidth = 2;
@@ -883,7 +1024,9 @@
       const contents = element(token.word);
       const meaning = describe(contents);
       const sprite = elementSprites[meaning.id];
-      const art = sprite?.complete && sprite.naturalWidth ? sprite : tintedClay(meaning.colorMask || 0);
+      const art = sprite?.complete && sprite.naturalWidth
+        ? tintedElementSprite(meaning.id, meaning.colorIntentMask ?? meaning.colorMask ?? 0)
+        : tintedClay(meaning.colorIntentMask ?? meaning.colorMask ?? 0);
       if (art.width && art.height) context.drawImage(art, token.left, token.top, hud.size, hud.size);
       context.fillStyle = "#fff7e7";
       context.strokeStyle = "rgb(18 19 21 / 92%)";
@@ -906,7 +1049,9 @@
       const top = drag.point.y - drag.offsetY;
       const meaning = describe(element(drag.word));
       const sprite = elementSprites[meaning.id];
-      const art = sprite?.complete && sprite.naturalWidth ? sprite : tintedClay(meaning.colorMask || 0);
+      const art = sprite?.complete && sprite.naturalWidth
+        ? tintedElementSprite(meaning.id, meaning.colorIntentMask ?? meaning.colorMask ?? 0)
+        : tintedClay(meaning.colorIntentMask ?? meaning.colorMask ?? 0);
       context.globalAlpha = 0.86;
       if (art.width && art.height) context.drawImage(art, left, top, hud.size, hud.size);
       context.fillStyle = "#fff7e7";
@@ -926,6 +1071,41 @@
     return Math.max(9, Math.min(20, size * 0.34 - Math.max(0, label.length - 7) * 0.48));
   }
 
+  function drawFaceLabel(targetContext, expression, centerX, centerY, size) {
+    const meaning = describe(expression);
+    const pathways = pathwaysForMeaning(meaning);
+    const lines = meaning.id === "compound-golem" && pathways.length > 1
+      ? pathways.flatMap(pathway => [
+          pathway.sense.label.toLowerCase(),
+          `then ${pathway.motive.label.toLowerCase()}`
+        ])
+      : [faceLabel(expression)];
+    const maxWidth = size - 8;
+    const maxHeight = size - 6;
+    const lineHeight = maxHeight / lines.length;
+    const longestLine = Math.max(...lines.map(line => line.length));
+    const fontSize = lines.length > 1
+      ? Math.max(3, Math.min(20, size * 0.24, lineHeight * 0.76, maxWidth / (longestLine * 0.56)))
+      : faceFontSize(lines[0], size);
+    const blockHeight = lineHeight * lines.length;
+    const firstY = centerY - blockHeight / 2 + lineHeight / 2;
+
+    targetContext.fillStyle = "#fff7e7";
+    targetContext.strokeStyle = "rgb(18 19 21 / 92%)";
+    targetContext.lineWidth = Math.min(2.4, fontSize * 0.2);
+    targetContext.textAlign = "center";
+    targetContext.textBaseline = "middle";
+    targetContext.font = `${fontSize}px "Creepster", Georgia, serif`;
+    targetContext.shadowColor = "rgb(255 247 224 / 90%)";
+    targetContext.shadowBlur = 2;
+    lines.forEach((line, index) => {
+      const y = lines.length > 1 ? firstY + index * lineHeight : centerY;
+      targetContext.strokeText(line, centerX, y, maxWidth);
+      targetContext.fillText(line, centerX, y, maxWidth);
+    });
+    targetContext.shadowBlur = 0;
+  }
+
   function renderDetail() {
     const selected = allBlocks().find(block => block.id === state.selectedId);
     if (!selected) {
@@ -935,6 +1115,7 @@
     const meaning = describe(selected.contents);
     const provisional = meaning.certainty === "provisional" || meaning.certainty === "unresolved";
     const sensor = sensorFor(selected);
+    const pathways = pathwaysForMeaning(meaning);
     const sightRangeCells = meaning.sightRangeCells || 3;
     const senseKind = sensor?.senseKind || (sensor?.id === "while-hand" ? "touch" : "see");
     const positiveSenseDescription = sensor ? senseConditionDescription(sensor) : `clay within ${sightRangeCells} cells`;
@@ -950,12 +1131,15 @@
       "do-move-left": "Prototype movement experiment · the language rule remains open",
       "do-move-right": "Prototype movement experiment · the language rule remains open",
       "do-move-up": "Prototype movement experiment · the language rule remains open",
+      "do-move-down": "Prototype movement experiment · the language rule remains open",
       "do-move-random": "Tentative random-walk experiment · the language rule remains open"
     };
-    const pairedMovementStatus = meaning.id === "golem-pair" && meaning.behaviorImplemented
-      ? selected.senseActive
-        ? `Prototype response active · ${senseDescription}`
-        : `Prototype response waiting · moves only while ${sensor?.label?.toLowerCase() || "the sense"} is true`
+    const pairedMovementStatus = pathways.length
+      ? pathways.length > 1
+        ? "Each sense is checked independently; its response runs when true."
+        : selected.senseActive
+          ? `Prototype response active · ${senseDescription}`
+          : `Prototype response waiting · acts only while ${sensor?.label?.toLowerCase() || "the sense"} is true`
       : null;
     const readingStatus = pairedMovementStatus || sightStatus || movementStatuses[meaning.id] ||
       (provisional ? "Proposed reading · behavior not simulated" : "Element");
@@ -1184,7 +1368,9 @@
       sprite.className = "element-token-art";
       sprite.alt = "";
       sprite.draggable = false;
-      sprite.src = spritePath || tintedClay(meaning.colorMask).toDataURL();
+      sprite.src = spritePath
+        ? tintedElementSprite(meaning.id, meaning.colorIntentMask ?? meaning.colorMask ?? 0).toDataURL()
+        : tintedClay(meaning.colorIntentMask ?? meaning.colorMask ?? 0).toDataURL();
       button.append(sprite);
       const label = document.createElement("span");
       label.className = "element-token-label";
@@ -1207,14 +1393,45 @@
     }, false);
   });
 
-  const movementIds = ["do-move-left", "do-move-right", "do-move-up", "do-move-random"];
+  const movementIds = ["do-move-left", "do-move-right", "do-move-up", "do-move-down", "do-move-random"];
+
+  function pathwaysForMeaning(meaning) {
+    if (meaning.id === "golem-pair") {
+      return meaning.pathways || [{
+        sense: meaning.sense,
+        motive: meaning.motive,
+        behaviorImplemented: meaning.behaviorImplemented
+      }];
+    }
+    return meaning.id === "compound-golem" ? meaning.pathways || [] : [];
+  }
+
+  function pathwayStateKey(index, pathway) {
+    return `${index}:${pathway.sense.id}:${pathway.motive.id}`;
+  }
+
+  function responseActionFor(motive) {
+    const actions = {
+      "do-fist": { type: "grab" },
+      "do-left-fist": { type: "grab", side: "left" },
+      "do-right-fist": { type: "grab", side: "right" },
+      "do-hand": { type: "drop" },
+      "do-left-hand": { type: "drop", side: "left" },
+      "do-right-hand": { type: "drop", side: "right" }
+    };
+    return actions[motive.id] || null;
+  }
 
   function movementFor(block) {
     const meaning = describe(block.contents);
     if (movementIds.includes(meaning.id)) return { action: meaning, conditioned: false };
-    if (meaning.id === "golem-pair" && activeSenseIds.includes(meaning.sense?.id) &&
-        movementIds.includes(meaning.motive?.id)) {
-      return { action: meaning.motive, conditioned: true };
+    const pathways = pathwaysForMeaning(meaning);
+    const activePath = pathways.find((pathway, index) =>
+      pathway.behaviorImplemented && movementIds.includes(pathway.motive?.id) &&
+      block.pathwaySenseStates?.[pathwayStateKey(index, pathway)] === true
+    );
+    if (activePath) {
+      return { action: activePath.motive, conditioned: true };
     }
     return null;
   }
@@ -1222,10 +1439,10 @@
   function sensorFor(block) {
     const meaning = describe(block.contents);
     if (activeSenseIds.includes(meaning.id)) return meaning;
-    if (meaning.id === "golem-pair" && meaning.behaviorImplemented &&
-        activeSenseIds.includes(meaning.sense?.id)) {
-      return meaning.sense;
-    }
+    const pathway = pathwaysForMeaning(meaning).find(item =>
+      item.behaviorImplemented && activeSenseIds.includes(item.sense?.id)
+    );
+    if (pathway) return pathway.sense;
     return null;
   }
 
@@ -1237,14 +1454,19 @@
     if (senseKind === "touch") {
       const colorNames = { 1: "red", 2: "green", 3: "yellow", 4: "blue", 5: "magenta", 6: "cyan", 7: "white" };
       const color = colorNames[sense.touchColorMask];
+      if (sense.handSide) return `another clay clod within reach of the ${sense.handSide} hand`;
       if (sense.touchObjectKind === "hand") return "a hand clod is adjacent";
       if (sense.touchObjectKind === "clod" && color) return `a ${color} clod is adjacent`;
       if (color) return `a clay clod with ${color} pigment is adjacent`;
       return "another clay clod is adjacent";
     }
     const range = sense.sightRangeCells || 3;
-    return sense.direction
-      ? `another clay clod is directly ${sense.direction === "up" ? "above" : `to the ${sense.direction}`} within ${range} cells`
+    const colorNames = { 1: "red", 2: "green", 3: "yellow", 4: "blue", 5: "magenta", 6: "cyan", 7: "white" };
+    const directionWords = { left: "to the left", right: "to the right", up: "above", down: "below" };
+    if (sense.direction) return `another clay clod is directly ${directionWords[sense.direction]} within ${range} cells`;
+    const color = colorNames[sense.sightColorMask];
+    return color
+      ? `a clay clod with ${color} pigment is within ${range} cells`
       : `clay within ${range} cells`;
   }
 
@@ -1252,6 +1474,20 @@
     const centerX = block.x + state.layout.size / 2;
     const centerY = block.y + state.layout.size / 2;
     const others = state.blocks.filter(other => !other.unplaced && other.id !== block.id);
+    // A palette drag is a visible clay copy while it moves over the garden.
+    // Let sensors inspect that preview without inserting it into game state,
+    // so grab/drop logic cannot treat the bank copy as a real movable clod.
+    if (palettePointerDrag?.moved && palettePointerDrag.dropTarget !== "bank" &&
+        palettePointerDrag.dropTarget !== "outside") {
+      const drag = palettePointerDrag;
+      others.push({
+        id: "palette-drag-preview",
+        contents: element(drag.word),
+        x: drag.point.x - drag.offsetX,
+        y: drag.point.y - drag.offsetY,
+        unplaced: false
+      });
+    }
     const senseKind = sense.senseKind || (sense.id === "while-hand" ? "touch" : "see");
     let positiveResult = false;
     if (senseKind === "see" && sense.direction) {
@@ -1261,58 +1497,65 @@
         const dx = other.x - block.x;
         const dy = other.y - block.y;
         if (sense.direction === "up") return Math.abs(dx) <= laneTolerance && dy < 0 && -dy <= range;
+        if (sense.direction === "down") return Math.abs(dx) <= laneTolerance && dy > 0 && dy <= range;
         if (sense.direction === "left") return Math.abs(dy) <= laneTolerance && dx < 0 && -dx <= range;
         if (sense.direction === "right") return Math.abs(dy) <= laneTolerance && dx > 0 && dx <= range;
         return false;
       });
     } else if (senseKind === "see") {
       const range = state.layout.cell * (sense.sightRangeCells || 3);
-      positiveResult = others.some(other => Math.hypot(
-        (other.x + state.layout.size / 2) - centerX,
-        (other.y + state.layout.size / 2) - centerY
-      ) <= range);
+      positiveResult = others.some(other => {
+        const colorMask = describe(other.contents).colorIntentMask ?? describe(other.contents).colorMask ?? 0;
+        if (Number.isInteger(sense.sightColorMask) &&
+            (colorMask & sense.sightColorMask) !== sense.sightColorMask) return false;
+        return Math.hypot(
+          (other.x + state.layout.size / 2) - centerX,
+          (other.y + state.layout.size / 2) - centerY
+        ) <= range;
+      });
     } else if (senseKind === "hold") {
       const hands = block.heldItems || {};
       positiveResult = sense.handSide ? Boolean(hands[sense.handSide]) : Boolean(hands.left || hands.right);
     } else if (senseKind === "touch") {
-      const cell = state.layout.cell + 0.5;
+      // The clearing allows free placement, so touch should be based on the
+      // gap between square clods rather than a fixed center-to-center cell
+      // radius. The small tolerance accommodates the normal gap between
+      // neighboring pieces in the garden.
+      const touchGap = Math.max(8, state.layout.cell - state.layout.size + 2);
       positiveResult = others.some(other => {
+        const otherCenterX = other.x + state.layout.size / 2;
+        if (sense.handSide === "left" && otherCenterX >= centerX) return false;
+        if (sense.handSide === "right" && otherCenterX <= centerX) return false;
         const meaning = describe(other.contents);
         if (sense.touchObjectKind && meaning.objectKind !== sense.touchObjectKind) return false;
         if (Number.isInteger(sense.touchColorMask)) {
           const colorMask = meaning.colorIntentMask ?? meaning.colorMask ?? 0;
           if ((colorMask & sense.touchColorMask) !== sense.touchColorMask) return false;
         }
-        return Math.abs((other.x + state.layout.size / 2) - centerX) <= cell &&
-          Math.abs((other.y + state.layout.size / 2) - centerY) <= cell;
+        const gapX = Math.max(0, Math.abs(otherCenterX - centerX) - state.layout.size);
+        const otherCenterY = other.y + state.layout.size / 2;
+        const gapY = Math.max(0, Math.abs(otherCenterY - centerY) - state.layout.size);
+        return gapX <= touchGap && gapY <= touchGap;
       });
     }
     return sense.negated ? !positiveResult : positiveResult;
   }
 
   function hasActivePrototypeBehavior(block) {
-    return movementFor(block) !== null || sensorFor(block) !== null || actionFor(block) !== null;
+    const meaning = describe(block.contents);
+    const pathways = pathwaysForMeaning(meaning);
+    return movementFor(block) !== null || sensorFor(block) !== null || actionFor(block) !== null ||
+      pathways.some(pathway => pathway.behaviorImplemented && responseActionFor(pathway.motive));
   }
 
   function actionFor(block) {
-    const id = describe(block.contents).id;
-    const actions = {
-      "do-fist": { type: "grab" },
-      "do-left-fist": { type: "grab", side: "left" },
-      "do-right-fist": { type: "grab", side: "right" },
-      "do-hand": { type: "drop" },
-      "do-left-hand": { type: "drop", side: "left" },
-      "do-right-hand": { type: "drop", side: "right" }
-    };
-    return actions[id] || null;
+    return responseActionFor(describe(block.contents));
   }
 
   function tickActiveMovement() {
     const now = performance.now();
     const elapsed = lastMovementTime === null ? 0 : Math.min((now - lastMovementTime) / 1000, 0.1);
     lastMovementTime = now;
-    const actions = state.blocks.map(block => ({ block, action: actionFor(block) }))
-      .filter(item => item.action);
     if (!state.blocks.some(hasActivePrototypeBehavior)) {
       window.clearInterval(movementTimer);
       movementTimer = null;
@@ -1323,10 +1566,82 @@
     let moved = false;
     let handChanged = false;
     let sightChanged = false;
-    for (const { block, action } of actions) {
+    const activePathways = [];
+    const sensors = [];
+    for (const block of state.blocks) {
+      const pathways = pathwaysForMeaning(describe(block.contents));
+      if (pathways.length) {
+        const states = block.pathwaySenseStates || (block.pathwaySenseStates = {});
+        let anyActive = false;
+        pathways.forEach((pathway, index) => {
+          if (!pathway.behaviorImplemented || !activeSenseIds.includes(pathway.sense.id)) return;
+          const key = pathwayStateKey(index, pathway);
+          const wasInitialized = typeof states[key] === "boolean";
+          const wasActive = states[key];
+          const isTrue = sensorIsTrue(block, pathway.sense);
+          states[key] = isTrue;
+          anyActive ||= isTrue;
+          sensors.push({ block, sense: pathway.sense, pathway });
+          activePathways.push({ block, pathway, index, key, active: isTrue });
+          if (wasInitialized && wasActive !== isTrue) sightChanged = true;
+          if (wasInitialized && wasActive !== isTrue) {
+            const condition = senseConditionDescription(pathway.sense);
+            const truth = isTrue
+              ? (pathway.sense.negated ? `no ${condition}` : condition)
+              : (pathway.sense.negated ? condition : `no ${condition}`);
+            setStatus(`${pathway.sense.label.toLowerCase()} then ${pathway.motive.label.toLowerCase()} is ${isTrue ? "true" : "false"}: ${truth}.`);
+          }
+        });
+        if (block.senseActive !== anyActive) {
+          block.senseActive = anyActive;
+          sightChanged = true;
+        }
+        if (sightChanged && state.selectedId === block.id) renderDetail();
+      } else {
+        const sense = sensorFor(block);
+        if (!sense) continue;
+        const wasInitialized = typeof block.senseActive === "boolean";
+        const isTrue = sensorIsTrue(block, sense);
+        sensors.push({ block, sense });
+        if (block.senseActive !== isTrue) {
+          block.senseActive = isTrue;
+          sightChanged = true;
+          if (state.selectedId === block.id) renderDetail();
+          if (wasInitialized) {
+            const condition = senseConditionDescription(sense);
+            setStatus(`while ${sense.label.toLowerCase()} is ${isTrue ? "true" : "false"}: ${condition}.`);
+          }
+        }
+      }
+    }
+
+    const actions = [];
+    for (const block of state.blocks) {
+      const pathways = pathwaysForMeaning(describe(block.contents));
+      if (!pathways.length) {
+        const action = actionFor(block);
+        if (action) actions.push({ block, action, key: null });
+        continue;
+      }
+      for (const entry of activePathways) {
+        if (entry.block.id !== block.id || !entry.active) continue;
+        const action = responseActionFor(entry.pathway.motive);
+        if (action) actions.push({ block, action, key: entry.key });
+      }
+    }
+    for (const { block, action, key } of actions) {
       if (!state.blocks.some(current => current.id === block.id)) continue;
-      if (state.drag?.block.id === block.id || now < (block.nextActionAt || 0)) continue;
-      block.nextActionAt = now + 700;
+      // Keep a dragged golem's response behavior live, except grabbing: a grab
+      // during the user's drag can pull another clod away from the pointer.
+      if (action.type === "grab" && state.drag?.block.id === block.id) continue;
+      if (key === null) {
+        if (now < (block.nextActionAt || 0)) continue;
+        block.nextActionAt = now + 700;
+      } else {
+        const nextActions = block.nextPathActionAt || (block.nextPathActionAt = {});
+        if (now < (nextActions[key] || 0)) continue;
+        nextActions[key] = now + 700;
+      }
       const changed = action.type === "grab"
         ? grabAdjacentClay(block, action.side)
         : dropHeldClay(block, action.side);
@@ -1334,32 +1649,7 @@
     }
     const movers = state.blocks.map(block => ({ block, movement: movementFor(block) }))
       .filter(item => item.movement);
-    const sightSensors = state.blocks.map(block => ({ block, sense: sensorFor(block) }))
-      .filter(item => item.sense);
     const frame = imageFrame();
-    // Evaluate each sense before moving its response, so a false sense stops
-    // that movement on the same update rather than one timer tick later.
-    for (const { block, sense } of sightSensors) {
-      const wasInitialized = typeof block.senseActive === "boolean";
-      const isTrue = sensorIsTrue(block, sense);
-      if (block.senseActive !== isTrue) {
-        block.senseActive = isTrue;
-        sightChanged = true;
-        if (state.selectedId === block.id) renderDetail();
-        if (wasInitialized) {
-          const pairLabel = describe(block.contents).id === "golem-pair";
-          const senseKind = sense.senseKind || (sense.id === "while-hand" ? "touch" : "see");
-          const senseLabel = sense.label.toLowerCase();
-          const positiveCondition = senseConditionDescription(sense);
-          const condition = isTrue
-            ? (sense.negated ? `no ${positiveCondition}` : positiveCondition)
-            : (sense.negated ? positiveCondition : `no ${positiveCondition}`);
-          setStatus(isTrue
-            ? `${pairLabel ? `${senseLabel} then move` : `while ${senseLabel}`} is true: ${condition}.`
-            : `${pairLabel ? `${senseLabel} then move` : `while ${senseLabel}`} is false: ${condition}.`);
-        }
-      }
-    }
 
     for (const { block, movement } of movers) {
       if (state.drag?.block.id === block.id || (movement.conditioned && !block.senseActive)) continue;
@@ -1373,7 +1663,9 @@
           ? { x: 1, y: 0 }
           : movementId === "do-move-up"
             ? { x: 0, y: -1 }
-            : block.randomDirection;
+            : movementId === "do-move-down"
+              ? { x: 0, y: 1 }
+              : block.randomDirection;
       let next = movementPosition(block, direction, elapsed, frame);
       if (next.blocked && movementId === "do-move-random") {
         const openDirections = shuffledCardinalDirections()
@@ -1406,7 +1698,7 @@
       moved = true;
     }
     const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches === true;
-    const shouldPulse = sightSensors.some(({ block }) => block.senseActive) && !reducedMotion;
+    const shouldPulse = sensors.some(({ block }) => block.senseActive) && !reducedMotion;
     if (moved || handChanged || sightChanged || shouldPulse) drawMap();
   }
 
@@ -1427,7 +1719,9 @@
     const centerX = golem.x + state.layout.size / 2;
     const centerY = golem.y + state.layout.size / 2;
     const candidates = state.blocks.filter(other => {
-      if (other.id === golem.id || other.unplaced) return false;
+      // Pointer-held pieces belong to the player's current gesture. Do not
+      // let an autonomous grab pull a dragged clod or golem away from them.
+      if (other.id === golem.id || other.unplaced || state.drag?.block.id === other.id) return false;
       const dx = other.x + state.layout.size / 2 - centerX;
       const dy = other.y + state.layout.size / 2 - centerY;
       return (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) && Math.abs(dx) <= cell && Math.abs(dy) <= cell;
@@ -1550,7 +1844,10 @@
       state.selectedId = null;
       renderDetail();
       drawMap();
-      setStatus(`No confirmed combination for ${faceLabel(target.contents)} + ${faceLabel(dropped.contents)}. Both clods stay in place.`);
+      const reason = repeatsOperatorWord(target.contents, dropped.contents)
+        ? "An operator cannot be added again to an expression that already contains it. Both clods stay in place."
+        : `No confirmed combination for ${faceLabel(target.contents)} + ${faceLabel(dropped.contents)}. Both clods stay in place.`;
+      setStatus(reason);
       return false;
     }
 
@@ -1563,7 +1860,7 @@
     renderDetail();
     drawMap();
     const movementId = describe(target.contents).id;
-    if (["do-move-left", "do-move-right", "do-move-up", "do-move-random"].includes(movementId)) {
+    if (["do-move-left", "do-move-right", "do-move-up", "do-move-down", "do-move-random"].includes(movementId)) {
       const movementNote = movementId === "do-move-random"
         ? "This tentative prototype guess wanders slowly in random directions; the game rule is not settled."
         : `This provisional action keeps trying to move slowly ${movementId.slice("do-move-".length)}; the movement rule remains open.`;
@@ -1577,17 +1874,10 @@
       const condition = sense.negated ? `no ${positiveCondition}` : positiveCondition;
       setStatus(`${targetLabel} + ${droppedLabel} → ${faceLabel(target.contents)}. It senses when ${condition} and glows while the condition is true.`);
       startActiveMovement();
-    } else if (movementId === "golem-pair" && describe(target.contents).behaviorImplemented) {
+    } else if (["golem-pair", "compound-golem"].includes(movementId) && describe(target.contents).behaviorImplemented) {
       const meaning = describe(target.contents);
-      const range = meaning.sightRangeCells || 3;
-      const touchResponse = (meaning.sense?.senseKind || (meaning.sense?.id === "while-hand" ? "touch" : "see")) === "touch";
-      const positiveCondition = touchResponse
-        ? "another clay clod is adjacent"
-        : meaning.sense?.direction
-          ? `a clay clod is directly ${meaning.sense.direction === "up" ? "above" : `to the ${meaning.sense.direction}`} within ${range} cells`
-          : `another clay clod is within ${range} cells`;
-      const condition = meaning.sense?.negated ? `no ${positiveCondition}` : positiveCondition;
-      setStatus(`${targetLabel} + ${droppedLabel} → ${faceLabel(target.contents)}. It moves only while ${condition}.`);
+      const pathwayCount = pathwaysForMeaning(meaning).length;
+      setStatus(`${targetLabel} + ${droppedLabel} → ${faceLabel(target.contents)}. Each of its ${pathwayCount} conditional pathways runs when its own sense is true.`);
       startActiveMovement();
     } else {
       setStatus(`${targetLabel} + ${droppedLabel} → ${faceLabel(target.contents)}. ${describe(target.contents).certainty === "provisional" ? "This proposed expression has no active game behavior yet." : "The two clods have merged into one."}`);
