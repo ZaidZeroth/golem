@@ -13,6 +13,17 @@
   const clayImage = new Image();
   clayImage.src = "assets/golem-clay-lump-64px.png";
   clayImage.addEventListener("load", () => drawMap());
+  const clayTintCache = new Map();
+  const clearingPolygon = [
+    [0.24, 0.31], [0.31, 0.26], [0.39, 0.24], [0.44, 0.27],
+    [0.45, 0.32], [0.42, 0.36], [0.47, 0.39], [0.54, 0.36],
+    [0.62, 0.39], [0.72, 0.45], [0.76, 0.50], [0.72, 0.55],
+    [0.65, 0.56], [0.58, 0.53], [0.52, 0.50], [0.46, 0.47],
+    [0.42, 0.51], [0.41, 0.57], [0.46, 0.63], [0.55, 0.67],
+    [0.65, 0.65], [0.73, 0.69], [0.76, 0.75], [0.69, 0.80],
+    [0.57, 0.81], [0.45, 0.78], [0.35, 0.72], [0.28, 0.66],
+    [0.23, 0.59], [0.21, 0.51], [0.22, 0.41]
+  ];
   const elementWords = [
     "RED", "GREEN", "BLUE", "BLOCK", "NOT", "AND", "OR", "RIGHT", "UP",
     "WHILE", "DO", "HAND", "EYE", "FEET", "IN", "ME", "FIT"
@@ -354,13 +365,13 @@
     const boardStyle = window.getComputedStyle(mapBoard);
     const horizontalPadding = parseFloat(boardStyle.paddingLeft) + parseFloat(boardStyle.paddingRight);
     const width = Math.max(280, mapBoard.clientWidth - horizontalPadding);
-    const size = Math.max(44, Math.min(76, width / 10));
-    const cell = size + 14;
+    const size = Math.max(32, Math.min(54, width / 14));
+    const cell = size + 6;
     const columns = Math.max(2, Math.floor((width - 12) / cell));
-    const rows = Math.ceil(state.blocks.length / columns);
-    const height = rows * cell + 24;
+    const height = Math.max(540, width * (992 / 1586));
+    const rows = Math.max(1, Math.floor(height / cell));
     const dpr = window.devicePixelRatio || 1;
-    state.layout = { size, cell, columns, width, height, dpr };
+    state.layout = { size, cell, columns, rows, width, height, dpr };
     canvas.style.height = `${height}px`;
     canvas.width = Math.round(width * dpr);
     canvas.height = Math.round(height * dpr);
@@ -369,28 +380,114 @@
     drawMap();
   }
 
-  function arrangeBlocks() {
-    const { columns, cell, size } = state.layout;
-    const slots = shuffle(state.blocks.map((_, index) => index));
-    state.blocks.forEach((block, index) => {
-      const slot = slots[index];
-      const column = slot % columns;
-      const row = Math.floor(slot / columns);
-      const inset = Math.max(6, (cell - size) / 2);
-      const jitter = Math.min(3, inset / 3);
-      block.x = 12 + column * cell + inset + (Math.random() - 0.5) * jitter;
-      block.y = 12 + row * cell + inset + (Math.random() - 0.5) * jitter;
+  function imageFrame() {
+    const { width, height } = state.layout;
+    const imageWidth = worldImage.naturalWidth || 1586;
+    const imageHeight = worldImage.naturalHeight || 992;
+    const scale = Math.max(width / imageWidth, height / imageHeight);
+    const drawWidth = imageWidth * scale;
+    const drawHeight = imageHeight * scale;
+    return {
+      x: (width - drawWidth) / 2,
+      y: (height - drawHeight) / 2,
+      width: drawWidth,
+      height: drawHeight
+    };
+  }
+
+  function pointInPolygon(x, y) {
+    let inside = false;
+    for (let i = 0, j = clearingPolygon.length - 1; i < clearingPolygon.length; j = i, i += 1) {
+      const [xi, yi] = clearingPolygon[i];
+      const [xj, yj] = clearingPolygon[j];
+      const crosses = (yi > y) !== (yj > y) &&
+        x < ((xj - xi) * (y - yi)) / (yj - yi) + xi;
+      if (crosses) inside = !inside;
+    }
+    return inside;
+  }
+
+  function isSafeCell(x, y, size, frame) {
+    const inset = Math.min(3, size / 10);
+    const corners = [
+      [x + inset, y + inset], [x + size - inset, y + inset],
+      [x + inset, y + size - inset], [x + size - inset, y + size - inset],
+      [x + size / 2, y + size / 2]
+    ];
+    return corners.every(([canvasX, canvasY]) => {
+      const imageX = (canvasX - frame.x) / frame.width;
+      const imageY = (canvasY - frame.y) / frame.height;
+      return pointInPolygon(imageX, imageY);
     });
+  }
+
+  function clearingCells(cell, size) {
+    const { width, height } = state.layout;
+    const frame = imageFrame();
+    const inset = (cell - size) / 2;
+    const cells = [];
+    const columns = Math.floor(width / cell);
+    const rows = Math.floor(height / cell);
+    for (let row = 0; row < rows; row += 1) {
+      for (let column = 0; column < columns; column += 1) {
+        const x = column * cell + inset;
+        const y = row * cell + inset;
+        if (isSafeCell(x, y, size, frame)) cells.push({ x, y });
+      }
+    }
+    return cells;
+  }
+
+  function arrangeBlocks() {
+    const { size } = state.layout;
+    let cell = state.layout.cell;
+    let slots = clearingCells(cell, size);
+    while (slots.length < state.blocks.length && cell > size + 2) {
+      cell -= 2;
+      slots = clearingCells(cell, size);
+    }
+    state.layout.cell = cell;
+    state.layout.columns = Math.floor(state.layout.width / cell);
+    state.layout.rows = Math.floor(state.layout.height / cell);
+    shuffle(slots);
+    state.blocks.forEach((block, index) => {
+      const slot = slots[index] || { x: 0, y: 0 };
+      block.x = slot.x;
+      block.y = slot.y;
+    });
+  }
+
+  function tintedClay(colorMask) {
+    if (clayTintCache.has(colorMask)) return clayTintCache.get(colorMask);
+    const tint = {
+      1: "rgb(190 55 48 / 55%)",
+      2: "rgb(68 143 73 / 55%)",
+      3: "rgb(222 192 55 / 58%)",
+      4: "rgb(65 112 193 / 55%)",
+      5: "rgb(196 67 157 / 58%)",
+      6: "rgb(61 183 184 / 58%)",
+      7: "rgb(238 239 228 / 72%)"
+    }[colorMask] || "rgb(48 51 57 / 82%)";
+    const sprite = document.createElement("canvas");
+    sprite.width = clayImage.naturalWidth || 64;
+    sprite.height = clayImage.naturalHeight || 64;
+    const spriteContext = sprite.getContext("2d");
+    if (clayImage.complete && clayImage.naturalWidth) {
+      spriteContext.drawImage(clayImage, 0, 0, sprite.width, sprite.height);
+      spriteContext.globalCompositeOperation = "source-atop";
+      spriteContext.fillStyle = tint;
+      spriteContext.fillRect(0, 0, sprite.width, sprite.height);
+    }
+    clayTintCache.set(colorMask, sprite);
+    return sprite;
   }
 
   function drawMap() {
     const { width, height, size } = state.layout;
     context.clearRect(0, 0, width, height);
     if (worldImage.complete && worldImage.naturalWidth) {
-      const scale = Math.max(width / worldImage.naturalWidth, height / worldImage.naturalHeight);
-      const drawWidth = worldImage.naturalWidth * scale;
-      const drawHeight = worldImage.naturalHeight * scale;
-      context.drawImage(worldImage, (width - drawWidth) / 2, (height - drawHeight) / 2, drawWidth, drawHeight);
+      const frame = imageFrame();
+      context.drawImage(worldImage, frame.x, frame.y, frame.width, frame.height);
     } else {
       context.fillStyle = "#263328";
       context.fillRect(0, 0, width, height);
@@ -400,22 +497,8 @@
       const focused = block.id === state.focusedId;
       const target = block.id === state.targetId;
       if (clayImage.complete && clayImage.naturalWidth) {
-        context.drawImage(clayImage, block.x, block.y, size, size);
         const colorMask = describe(block.contents).colorMask;
-        const tint = {
-          1: "rgb(190 55 48 / 55%)",
-          2: "rgb(68 143 73 / 55%)",
-          3: "rgb(222 192 55 / 58%)",
-          4: "rgb(65 112 193 / 55%)",
-          5: "rgb(196 67 157 / 58%)",
-          6: "rgb(61 183 184 / 58%)",
-          7: "rgb(238 239 228 / 72%)"
-        }[colorMask] || "rgb(48 51 57 / 82%)";
-        context.save();
-        context.globalCompositeOperation = "source-atop";
-        context.fillStyle = tint;
-        context.fillRect(block.x, block.y, size, size);
-        context.restore();
+        context.drawImage(tintedClay(colorMask), block.x, block.y, size, size);
       } else {
         context.fillStyle = "#aaa7a0";
         context.fillRect(block.x, block.y, size, size);
@@ -430,7 +513,7 @@
       context.lineWidth = 2.4;
       context.textAlign = "center";
       context.textBaseline = "middle";
-      context.font = `800 ${faceFontSize(faceLabel(block.contents), size)}px "Atkinson Hyperlegible Next", system-ui, sans-serif`;
+      context.font = `400 ${faceFontSize(faceLabel(block.contents), size)}px "Creepster", Georgia, serif`;
       context.shadowColor = "rgb(255 247 224 / 90%)";
       context.shadowBlur = 2;
       const label = faceLabel(block.contents);
@@ -441,7 +524,7 @@
   }
 
   function faceFontSize(label, size) {
-    return Math.max(9, Math.min(16, size * 0.29 - Math.max(0, label.length - 7) * 0.55));
+    return Math.max(9, Math.min(20, size * 0.34 - Math.max(0, label.length - 7) * 0.48));
   }
 
   function renderDetail() {
@@ -613,6 +696,7 @@
   });
 
   window.addEventListener("resize", resizeMap);
+  if (document.fonts?.ready) document.fonts.ready.then(() => drawMap());
   shuffle(state.blocks);
   resizeMap();
   renderDetail();

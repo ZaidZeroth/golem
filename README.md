@@ -14,7 +14,8 @@ Then open `http://127.0.0.1:8765/`.
 
 ## Current interaction draft
 
-- The map starts with two square blocks for each word listed in Issue #5. Starting positions are shuffled; reset reshuffles the map.
+- The map starts with two square blocks for each word listed in Issue #5. It lays out more candidate grid cells than blocks, randomly fills safe cells in the forest clearing, and leaves the remaining cells empty; reset reshuffles the map.
+- The shared clay sprite is tinted on an offscreen copy, so color filters affect its opaque clay pixels while preserving transparent edges and the sprite's shading. In-world word labels use the title's Creepster font.
 - Drag a square onto another to compose a recognized expression. The target remains in place; the dropped square is consumed. Exact target-then-dropped construction order is retained even when the square face uses a normalized reading; the proposed double-negation simplification reduces back to the elemental `RIGHT`.
 - The draft recognizes NOT + RED; provisional RGB channel unions (red + green → yellow, red + blue → magenta, green + blue → cyan, then any full RGB union → white); DO + RED → be red; NOT + HAND → FIST; HAND + HAND → COMBINE; provisional NOT + FIST → HAND; RIGHT + NOT → LEFT; and a second NOT over LEFT → RIGHT. LEFT/RIGHT hands and fists can be formed. The direction and hand rules are proposals; UP + NOT remains unimplemented.
 - EYE can combine with color, block, or direction filters. WHILE can combine with HAND, FIST, FIT, or a filtered sight expression; for example, `(WHILE + (EYE + (NOT + RED)))` reads “while seeing clay that does not contain red pigment.”
