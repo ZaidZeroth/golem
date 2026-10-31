@@ -1,2044 +1,11 @@
-(() => {
-  "use strict";
-
-  const canvas = document.querySelector("#map-canvas");
-  const context = canvas.getContext("2d");
-  const mapBoard = document.querySelector(".map-board");
-  const elementBank = document.querySelector("#element-bank");
-  const detail = document.querySelector("#detail-content");
-  const status = document.querySelector("#status");
-  const worldImage = new Image();
-  worldImage.src = "assets/golem-world-muddy-manx-field.png";
-  worldImage.addEventListener("load", () => drawMap());
-  const clayImage = new Image();
-  clayImage.src = "assets/golem-clay-lump-ink-outline-256px.png";
-  clayImage.addEventListener("load", () => {
-    // Tint requests can happen before this image loads, especially while the
-    // initial palette is being built. Discard those transparent placeholders.
-    clayTintCache.clear();
-    drawMap();
-    renderElementBank();
-  });
-  const clodImage = new Image();
-  clodImage.src = "assets/golem-clay-cube-block-256px.png";
-  clodImage.addEventListener("load", () => {
-    clodTintCache.clear();
-    drawMap();
-    renderElementBank();
-  });
-  const miniGolemImage = new Image();
-  miniGolemImage.src = "assets/golem-mini-golem-front-256px.png";
-  miniGolemImage.addEventListener("load", () => {
-    miniGolemTintCache.clear();
-    drawMap();
-  });
-  const elementSpritePaths = {
-    eye: "assets/golem-clay-eye-256px.png",
-    "not-eye": "assets/golem-clay-eye-closed-256px.png",
-    hand: "assets/golem-clay-hand-left-256px.png",
-    "left-hand": "assets/golem-clay-hand-left-256px.png",
-    "right-hand": "assets/golem-clay-hand-left-256px.png",
-    fist: "assets/golem-clay-fist-closed-256px.png",
-    "left-fist": "assets/golem-clay-fist-closed-256px.png",
-    "right-fist": "assets/golem-clay-fist-closed-256px.png",
-    feet: "assets/golem-clay-feet-256px.png",
-    left: "assets/golem-clay-arrow-right-256px.png",
-    right: "assets/golem-clay-arrow-right-256px.png",
-    up: "assets/golem-clay-arrow-right-256px.png",
-    down: "assets/golem-clay-arrow-right-256px.png"
-  };
-  elementSpritePaths.clod = "assets/golem-clay-cube-block-256px.png";
-  const elementTintCache = new Map();
-  const elementSprites = Object.fromEntries(Object.entries(elementSpritePaths).map(([meaning, path]) => {
-    const sprite = new Image();
-    sprite.src = path;
-    sprite.addEventListener("load", () => {
-      elementTintCache.clear();
-      drawMap();
-      renderElementBank();
-    });
-    return [meaning, sprite];
-  }));
-  const clayTintCache = new Map();
-  const clodTintCache = new Map();
-  const miniGolemTintCache = new Map();
-  const clearingPolygon = [
-    [0.02, 0.34], [0.98, 0.34], [0.98, 0.96], [0.02, 0.96]
-  ];
-  const elementWords = [
-    "RED", "GREEN", "BLUE", "NOT", "RIGHT", "UP", "WHILE", "DO",
-    "HAND", "EYE", "FEET", "CLOD"
-  ];
-  const pair = (left, right) => [left, right].sort().join("\u0000");
-  const activeSenseIds = [
-    "while-eye", "while-hand", "not-see", "not-touch", "not-hold",
-    "while-left-hand", "while-right-hand",
-    "while-fist", "while-left-fist", "while-right-fist",
-    "while-sight-left", "while-sight-right", "while-sight-up", "while-sight-down",
-    ...[1, 2, 3, 4, 5, 6, 7].map(mask => `while-sight-${({
-      1: "red", 2: "green", 3: "yellow", 4: "blue",
-      5: "magenta", 6: "cyan", 7: "white"
-    })[mask]}`),
-    "sight-left", "sight-right", "sight-up", "sight-down",
-    ...[1, 2, 3, 4, 5, 6, 7].map(mask => `while-touch-${({ 1: "red", 2: "green", 3: "yellow", 4: "blue", 5: "magenta", 6: "cyan", 7: "white" })[mask]}`),
-    "while-touch-hand-clod", "while-touch-red-clod", "while-touch-green-clod",
-    "while-touch-blue-clod", "while-touch-yellow-clod", "while-touch-magenta-clod",
-    "while-touch-cyan-clod", "while-touch-white-clod"
-  ];
-  const activeResponseIds = [
-    "do-move-left", "do-move-right", "do-move-up", "do-move-down", "do-move-random",
-    "do-fist", "do-left-fist", "do-right-fist",
-    "do-hand", "do-left-hand", "do-right-hand"
-  ];
-
-  function element(word) {
-    return { type: "element", word };
-  }
-
-  function compound(left, right, meaning = null) {
-    return { type: "compound", left, right, meaning };
-  }
-
-  function makeBlock(id, contents) {
-    return { id, contents, x: 0, y: 0, heldItems: { left: null, right: null } };
-  }
-
-  function makeInitialBlocks() {
-    // The element bank is an endless source, so start with one world copy of
-    // each base word instead of pre-filling the clearing with duplicates.
-    return elementWords.map((word, index) => makeBlock(`block-${index}`, element(word)));
-  }
-
-  const elementMeanings = {
-    RED: { id: "red", category: "filter", label: "RED", reading: "red pigment", colorMask: 1 },
-    GREEN: { id: "green", category: "filter", label: "GREEN", reading: "green pigment", colorMask: 2 },
-    BLUE: { id: "blue", category: "filter", label: "BLUE", reading: "blue pigment", colorMask: 4 },
-    CLOD: { id: "clod", category: "clod-kind", label: "CLOD", reading: "a clay clod" },
-    RIGHT: { id: "right", category: "filter", label: "RIGHT", reading: "the right direction" },
-    UP: { id: "up", category: "filter", label: "UP", reading: "the upward direction" },
-    HAND: { id: "hand", category: "sense-source", label: "HAND", reading: "touch", senseText: "touch" },
-    EYE: { id: "eye", category: "sense-source", label: "EYE", reading: "an eye", senseText: "seeing" },
-    FEET: { id: "feet", category: "action-part", label: "FEET", reading: "feet used for movement" },
-    DO: { id: "do", category: "operator", label: "DO" },
-    WHILE: { id: "while", category: "operator", label: "WHILE" },
-    AND: { id: "and", category: "operator", label: "AND" },
-    OR: { id: "or", category: "operator", label: "OR" },
-    NOT: { id: "not", category: "operator", label: "NOT" },
-    IN: { id: "in", category: "operator", label: "IN" },
-    ME: { id: "me", category: "operator", label: "ME" },
-    FIT: { id: "fit", category: "sense-source", label: "FIT", reading: "the held pieces fit", senseText: "held pieces fitting into a structure" }
-  };
-
-  function describe(expression) {
-    if (expression.type === "element") {
-      return { ...(elementMeanings[expression.word] || {}), certainty: "element" };
-    }
-    if (expression.meaning) return expression.meaning;
-    return {
-      id: "unresolved",
-      category: "unresolved",
-      label: `${faceLabel(expression.left)} + ${faceLabel(expression.right)}`,
-      reading: "No reading has been agreed for this expression.",
-      certainty: "unresolved"
-    };
-  }
-
-  const mixedColors = {
-    3: { id: "yellow", label: "YELLOW", reading: "yellow from red and green color channels" },
-    5: { id: "magenta", label: "MAGENTA", reading: "magenta from red and blue color channels" },
-    6: { id: "cyan", label: "CYAN", reading: "cyan from green and blue color channels" },
-    7: { id: "white", label: "WHITE", reading: "white from red, green, and blue color channels" }
-  };
-
-  function faceLabel(expression) {
-    if (expression.type === "element") return (elementMeanings[expression.word]?.label || expression.word).toLowerCase();
-    return describe(expression).label.toLowerCase();
-  }
-
-  function construction(expression) {
-    if (expression.type === "element") return expression.word.toLowerCase();
-    return `(${construction(expression.left)} + ${construction(expression.right)})`;
-  }
-
-  function provisionalMeaning(id, category, label, reading, extra = {}) {
-    return { id, category, label, reading, certainty: "provisional", ...extra };
-  }
-
-  function literalClodMeaning(contents) {
-    const contentColor = contents.colorIntentMask ?? contents.colorMask;
-    const isColored = Number.isInteger(contentColor);
-    const isHand = contents.id === "hand";
-    const isClodOfClod = contents.id === "clod" || contents.clodLiteral;
-    const contentLabel = contents.id === "clod"
-      ? "CLOD"
-      : contents.label || "clay";
-    const label = isClodOfClod ? `CLOD OF ${contentLabel}` : `${contentLabel} CLOD`;
-    const reading = isHand
-      ? "a hand clod"
-      : isColored
-        ? `a ${contents.label.toLowerCase()} clod`
-        : `a clay clod embodying ${contents.reading || contentLabel.toLowerCase()}`;
-    return provisionalMeaning(
-      isHand ? "hand-clod" : isColored ? `${contents.id}-clod` : `clod-of-${contents.id}`,
-      "object-filter",
-      label,
-      reading,
-      {
-        objectKind: "clod",
-        clodLiteral: true,
-        ...(isHand ? { touchObjectKind: "hand" } : {}),
-        ...(isColored ? { colorMask: contentColor } : {})
-      }
-    );
-  }
-
-  function combineMeaning(left, right, leftExpression, rightExpression) {
-    const ids = pair(left.id, right.id);
-    if (Number.isInteger(left.colorMask) && Number.isInteger(right.colorMask)) {
-      const colorMask = left.colorMask | right.colorMask;
-      if (colorMask === left.colorMask && colorMask === right.colorMask) return null;
-      const mixed = mixedColors[colorMask];
-      if (mixed) return provisionalMeaning(mixed.id, "color-state", mixed.label, mixed.reading, { colorMask });
-    }
-    if (left.id === "clod") return literalClodMeaning(right);
-    if (right.id === "clod") return literalClodMeaning(left);
-    if (ids === pair("do", "feet")) {
-      return provisionalMeaning(
-        "do-move-random", "motive", "MOVE",
-        "move slowly in a random cardinal direction, changing direction occasionally; tentative prototype interpretation"
-      );
-    }
-    const movementDirection = ["left", "right", "up", "down"].find(direction =>
-      ids === pair("do-move-random", direction)
-    );
-    if (movementDirection) {
-      const directionWords = { left: "left", right: "right", up: "up", down: "down" };
-      return provisionalMeaning(
-        `do-move-${movementDirection}`, "motive", `MOVE ${movementDirection.toUpperCase()}`,
-        `move slowly ${directionWords[movementDirection]}; directional prototype behavior`
-      );
-    }
-    const dropDirection = ["left", "right"].find(direction =>
-      ids === pair("do-hand", direction)
-    );
-    if (dropDirection) {
-      return provisionalMeaning(
-        `do-${dropDirection}-hand`, "motive", `DROP ${dropDirection.toUpperCase()}`,
-        `drop the clay held in the ${dropDirection} hand`
-      );
-    }
-    const grabDirection = ["left", "right"].find(direction =>
-      ids === pair("do-fist", direction)
-    );
-    if (grabDirection) {
-      return provisionalMeaning(
-        `do-${grabDirection}-fist`, "motive", `GRAB ${grabDirection.toUpperCase()}`,
-        `grab with the ${grabDirection} hand`
-      );
-    }
-    const notRedIds = pair("not", "red");
-    if (ids === pair("do", "red")) {
-      return provisionalMeaning("be-red", "motive", "BE RED", "be red", { colorIntentMask: 1 });
-    }
-    if (ids === notRedIds) {
-      return provisionalMeaning("not-red", "filter", "NOT RED", "clay that does not contain red pigment");
-    }
-    if (ids === pair("not", "right-hand")) {
-      return provisionalMeaning("left-hand", "sense-source", "LEFT HAND", "left hand", { senseText: "touch" });
-    }
-    if (ids === pair("not", "left-hand")) {
-      return provisionalMeaning("right-hand", "sense-source", "RIGHT HAND", "right hand", { senseText: "touch" });
-    }
-    if (ids === pair("not", "hand")) {
-      return provisionalMeaning("fist", "sense-source", "FIST", "a hand formed into a fist", { senseText: "holding" });
-    }
-    if (ids === pair("not", "fist")) {
-      return provisionalMeaning("hand", "sense-source", "HAND", "a hand opened from a fist", { senseText: "touch" });
-    }
-    if (ids === pair("right", "not")) {
-      return provisionalMeaning("left", "filter", "LEFT", "the left direction");
-    }
-    if (ids === pair("not", "up")) {
-      return provisionalMeaning("down", "filter", "DOWN", "the downward direction");
-    }
-    if (ids === pair("left", "not")) {
-      return provisionalMeaning("right-after-double-not", "filter", "RIGHT", "the right direction after double negation");
-    }
-    if (ids === pair("do-eye", "not") || ids === pair("do", "not-eye")) {
-      return provisionalMeaning("do-not-look", "motive", "DON'T LOOK", "don't look", { source: "proposed language reading; runtime effect is undefined" });
-    }
-    if (ids === pair("not", "eye")) {
-      return provisionalMeaning("not-eye", "sense-source", "NOT EYE", "the negated EYE expression; its reading depends on the outer operator", { senseText: "not seeing" });
-    }
-    if (ids === pair("not", "while-eye")) {
-      return provisionalMeaning("not-see", "sense", "NOT SEE", "while not seeing anything within three cells", {
-        senseKind: "see", negated: true, sightRangeCells: 3,
-        senseText: "not seeing anything within three cells"
-      });
-    }
-    if (ids === pair("not", "while-hand")) {
-      return provisionalMeaning("not-touch", "sense", "NOT TOUCH", "while not touching anything", {
-        senseKind: "touch", negated: true,
-        senseText: "not touching any other clay clod"
-      });
-    }
-    if (ids === pair("not", "while-fist")) {
-      return provisionalMeaning("not-hold", "sense", "NOT HOLD", "while neither hand is holding a clay clod", {
-        senseKind: "hold", negated: true,
-        senseText: "not holding anything"
-      });
-    }
-    if ((left.id === "left" || left.id === "right") && right.id === "hand" ||
-        (right.id === "left" || right.id === "right") && left.id === "hand") {
-      const direction = left.id === "left" || left.id === "right" ? left : right;
-      return provisionalMeaning(`${direction.id}-hand`, "sense-source", `${direction.label} HAND`, `${direction.label.toLowerCase()} hand`, { senseText: "touch" });
-    }
-    if ((left.id === "left" || left.id === "right") && right.id === "fist" ||
-        (right.id === "left" || right.id === "right") && left.id === "fist") {
-      const direction = left.id === "left" || left.id === "right" ? left : right;
-      return provisionalMeaning(`${direction.id}-fist`, "sense-source", `${direction.label} FIST`, `${direction.label.toLowerCase()} fist`, { senseText: "holding" });
-    }
-    if (left.id === "eye" && (right.category === "filter" || right.category === "color-state") ||
-        right.id === "eye" && (left.category === "filter" || left.category === "color-state")) {
-      const filter = left.id === "eye" ? right : left;
-      if (["left", "right", "up", "down"].includes(filter.id)) return null;
-      const sightReading = `seeing ${Number.isInteger(filter.colorMask) ? `${filter.label.toLowerCase()} pigment` : filter.reading}`;
-      return provisionalMeaning(`sight-${filter.id}`, "sense", `SEE ${filter.label}`, sightReading, {
-        senseKind: "see", senseText: sightReading
-      });
-    }
-    if ((left.id === "while-eye" && (right.category === "filter" || right.category === "color-state")) ||
-        (right.id === "while-eye" && (left.category === "filter" || left.category === "color-state"))) {
-      const filter = left.id === "while-eye" ? right : left;
-      const direction = ["left", "right", "up", "down"].includes(filter.id) ? filter.id : null;
-      const sightReading = direction
-        ? `seeing something ${direction === "up" ? "above" : direction === "down" ? "below" : `to the ${direction}`}`
-        : `seeing ${Number.isInteger(filter.colorMask) ? `${filter.label.toLowerCase()} pigment` : filter.reading}`;
-      return provisionalMeaning(`while-sight-${filter.id}`, "sense", `SEE ${filter.label}`, `while ${sightReading}`, {
-        senseKind: "see", senseText: `while ${sightReading}`,
-        ...(Number.isInteger(filter.colorMask) ? { sightColorMask: filter.colorMask } : {}),
-        ...(direction ? { direction, sightRangeCells: 3 } : {})
-      });
-    }
-    if ((left.id === "while-hand" && ["left", "right"].includes(right.id)) ||
-        (right.id === "while-hand" && ["left", "right"].includes(left.id))) {
-      const direction = left.id === "while-hand" ? right : left;
-      const side = direction.id;
-      return provisionalMeaning(`while-${side}-hand`, "sense", `${side.toUpperCase()} TOUCH`,
-        `while touching with the ${side} hand`, {
-          senseKind: "touch", handSide: side,
-          senseText: `while touching with the ${side} hand`
-        });
-    }
-    if ((left.id === "while-hand" && (right.category === "filter" || right.category === "color-state")) ||
-        (right.id === "while-hand" && (left.category === "filter" || left.category === "color-state"))) {
-      const color = left.id === "while-hand" ? right : left;
-      if (Number.isInteger(color.colorMask)) {
-        return provisionalMeaning(`while-touch-${color.id}`, "sense", `TOUCH ${color.label}`,
-          `while touching ${color.label.toLowerCase()} pigment`, {
-            senseKind: "touch", senseText: `while touching ${color.label.toLowerCase()} pigment`,
-            touchColorMask: color.colorMask
-          });
-      }
-    }
-    if ((left.id === "while-hand" && right.category === "object-filter") ||
-        (right.id === "while-hand" && left.category === "object-filter")) {
-      const object = left.id === "while-hand" ? right : left;
-      const phrase = `while touching ${object.reading}`;
-      return provisionalMeaning(`while-touch-${object.id}`, "sense", `TOUCH ${object.label}`,
-        phrase, {
-          senseKind: "touch", senseText: phrase,
-          touchObjectKind: object.objectKind,
-          ...(Number.isInteger(object.colorMask) ? { touchColorMask: object.colorMask } : {})
-        });
-    }
-    if ((left.id === "while" && right.category === "sense-source") ||
-        (right.id === "while" && left.category === "sense-source")) {
-      const sense = left.id === "while" ? right : left;
-      const whilePhrases = {
-        eye: "while seeing anything",
-        "not-eye": "while not seeing",
-        hand: "while touching",
-        fist: "while holding",
-        fit: "while the held pieces fit",
-        "left-hand": "while touching with the left hand",
-        "right-hand": "while touching with the right hand",
-        "left-fist": "while holding with the left hand",
-        "right-fist": "while holding with the right hand"
-      };
-      const phrase = whilePhrases[sense.id] || `while sensing ${sense.senseText || sense.reading}`;
-      const whileLabels = {
-        eye: "SEE",
-        "not-eye": "NOT SEE",
-        hand: "TOUCH",
-        fist: "HOLD",
-        fit: "FIT",
-        "left-hand": "LEFT TOUCH",
-        "right-hand": "RIGHT TOUCH",
-        "left-fist": "LEFT HOLD",
-        "right-fist": "RIGHT HOLD"
-      };
-      const label = whileLabels[sense.id] || sense.label;
-      return provisionalMeaning(`while-${sense.id}`, "sense", label, phrase, {
-        senseText: phrase,
-        ...(sense.id.endsWith("fist") ? {
-          senseKind: "hold",
-          ...(sense.id === "left-fist" ? { handSide: "left" } : {}),
-          ...(sense.id === "right-fist" ? { handSide: "right" } : {})
-        } : {}),
-        ...(sense.id === "left-hand" || sense.id === "right-hand" ? {
-          senseKind: "touch",
-          handSide: sense.id === "left-hand" ? "left" : "right"
-        } : {}),
-        ...(sense.id === "eye" ? { sightRangeCells: 3 } : {})
-      });
-    }
-    if ((left.id === "while" && ["sense", "filter"].includes(right.category)) ||
-        (right.id === "while" && ["sense", "filter"].includes(left.category))) {
-      const sense = left.id === "while" ? right : left;
-      const phrase = sense.id === "not-red"
-        ? "while I contain no red pigment"
-        : `while ${sense.senseText || sense.reading}`;
-      return provisionalMeaning(`while-${sense.id}`, "sense", sense.label, phrase, { senseText: phrase });
-    }
-    if ((left.id === "do" && ["hand", "fist", "red", "eye", "not-eye", "left-hand", "right-hand", "left-fist", "right-fist"].includes(right.id)) ||
-        (right.id === "do" && ["hand", "fist", "red", "eye", "not-eye", "left-hand", "right-hand", "left-fist", "right-fist"].includes(left.id))) {
-      const action = left.id === "do" ? right : left;
-      const actions = {
-        hand: ["DROP", "drop the held piece"],
-        fist: ["GRAB", "grab a piece"],
-        red: ["ADD RED", "add red pigment"],
-        eye: ["LOOK", "look"],
-        "not-eye": ["DON'T LOOK", "don't look"],
-        "left-hand": ["DROP LEFT", "drop what is in the left hand"],
-        "right-hand": ["DROP RIGHT", "drop what is in the right hand"],
-        "left-fist": ["GRAB LEFT", "grab with the left hand"],
-        "right-fist": ["GRAB RIGHT", "grab with the right hand"]
-      };
-      const [label, reading] = actions[action.id];
-      return provisionalMeaning(`do-${action.id}`, "motive", label, reading);
-    }
-    if ((left.id === "in" && right.id === "me") || (right.id === "in" && left.id === "me")) {
-      return provisionalMeaning("inside-me", "inspect", "IN ME", "inside me");
-    }
-    if ((left.id === "inside-me" && right.category === "filter") ||
-        (right.id === "inside-me" && left.category === "filter")) {
-      const pattern = left.id === "inside-me" ? right : left;
-      return provisionalMeaning(`inside-${pattern.id}`, "inspect", `IN ME ${pattern.label}`, `whether ${pattern.reading} occurs anywhere inside me`);
-    }
-    if (left.category === "golem" && right.category === "golem") {
-      const pathways = [...pathwaysForMeaning(left), ...pathwaysForMeaning(right)];
-      if (pathways.length < 2 || pathways.some(pathway => !pathway.behaviorImplemented)) return null;
-      const reading = pathways.map(pathway =>
-        `${pathway.sense.reading.replace(/^while /i, "while ")}, then ${pathway.motive.reading}`
-      ).join("; ");
-      const label = pathways.map(pathway =>
-        `${pathway.sense.label} THEN ${pathway.motive.label}`
-      ).join("; ");
-      return provisionalMeaning("compound-golem", "golem", label, reading, {
-        pathways,
-        behaviorImplemented: true
-      });
-    }
-    if ((left.category === "sense" && right.category === "motive") ||
-        (right.category === "sense" && left.category === "motive")) {
-      const sense = left.category === "sense" ? left : right;
-      const motive = left.category === "motive" ? left : right;
-      const label = `${sense.label} THEN ${motive.label}`;
-      const reading = `${sense.reading}; then ${motive.reading}`;
-      const behaviorImplemented = activeSenseIds.includes(sense.id) && activeResponseIds.includes(motive.id);
-      return provisionalMeaning("golem-pair", "golem", label, reading, {
-        sense,
-        motive,
-        behaviorImplemented,
-        pathways: [{ sense, motive, behaviorImplemented }],
-        ...(behaviorImplemented ? { sightRangeCells: sense.sightRangeCells || 3 } : {})
-      });
-    }
-    if ((left.category === "sense" && ["and", "or"].includes(right.id)) ||
-        (right.category === "sense" && ["and", "or"].includes(left.id))) {
-      const sense = left.category === "sense" ? left : right;
-      const operator = left.id === "and" || left.id === "or" ? left : right;
-      return provisionalMeaning(`${operator.id}-pending-${sense.id}`, "sense-operator-pending", `${sense.label} ${operator.label} â€¦`, `${sense.reading}; choose another sense to complete ${operator.label}`, { operator: operator.id, firstSense: sense });
-    }
-    if ((left.category === "sense-operator-pending" && right.category === "sense") ||
-        (right.category === "sense-operator-pending" && left.category === "sense")) {
-      const pending = left.category === "sense-operator-pending" ? left : right;
-      const nextSense = left.category === "sense-operator-pending" ? right : left;
-      if (pending.firstSense.id === nextSense.id) return null;
-      const joiner = pending.operator === "and" ? "and" : "or";
-      return provisionalMeaning(`${pending.operator}-senses-${pending.firstSense.id}-${nextSense.id}`, "sense", `${pending.firstSense.label} ${pending.operator.toUpperCase()} ${nextSense.label}`, `${pending.firstSense.reading} ${joiner} ${nextSense.reading}`, { senseText: `${pending.firstSense.senseText || pending.firstSense.reading} ${joiner} ${nextSense.senseText || nextSense.reading}` });
-    }
-    return null;
-  }
-
-  function resultExpression(leftExpression, rightExpression) {
-    const leftMeaning = describe(leftExpression);
-    const rightMeaning = describe(rightExpression);
-    // HOLD is built from WHILE + FIST, and FIST itself contains NOT. Allow
-    // the explicit NOT + HOLD recipe even though this adds a second NOT word.
-    const isNotHold = pair(leftMeaning.id, rightMeaning.id) === pair("not", "while-fist");
-    if (!isNotHold && repeatsOperatorWord(leftExpression, rightExpression)) return null;
-    const meaning = combineMeaning(
-      leftMeaning, rightMeaning, leftExpression, rightExpression
-    );
-    if (!meaning) return null;
-    if (meaning.id === "right-after-double-not") return element("RIGHT");
-    return compound(leftExpression, rightExpression, meaning);
-  }
-
-  function repeatsOperatorWord(leftExpression, rightExpression) {
-    const operatorWord = expression => expression.type === "element" &&
-      elementMeanings[expression.word]?.category === "operator"
-      ? expression.word
-      : null;
-    const containsWord = (expression, word) => expression.type === "element"
-      ? expression.word === word
-      : containsWord(expression.left, word) || containsWord(expression.right, word);
-    const leftOperator = operatorWord(leftExpression);
-    const rightOperator = operatorWord(rightExpression);
-    return Boolean(
-      (leftOperator && containsWord(rightExpression, leftOperator)) ||
-      (rightOperator && containsWord(leftExpression, rightOperator))
-    );
-  }
-
-  function plainLanguage(expression) {
-    return describe(expression).reading || "No reading has been agreed for this expression.";
-  }
-
-  const state = {
-    blocks: makeInitialBlocks(),
-    selectedId: null,
-    focusedId: null,
-    drag: null,
-    targetId: null,
-    layout: { size: 56, cell: 70, columns: 1, width: 1, height: 1, dpr: 1 },
-    paletteCopyCount: 0
-  };
-  let lastPaletteDropTime = 0;
-  let palettePointerDrag = null;
-  const movementSpeed = 16;
-  let movementTimer = null;
-  let lastMovementTime = null;
-
-  function shuffle(items) {
-    for (let i = items.length - 1; i > 0; i -= 1) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [items[i], items[j]] = [items[j], items[i]];
-    }
-    return items;
-  }
-
-  function allBlocks() {
-    return state.blocks;
-  }
-
-  function resizeMap() {
-    const previousLayout = state.layout;
-    const boardStyle = window.getComputedStyle(mapBoard);
-    const horizontalPadding = parseFloat(boardStyle.paddingLeft) + parseFloat(boardStyle.paddingRight);
-    const width = Math.max(280, mapBoard.clientWidth - horizontalPadding);
-    const size = Math.max(44, Math.min(64, width / 14));
-    const cell = size + 6;
-    const columns = Math.max(2, Math.floor((width - 12) / cell));
-    const height = Math.max(540, width * (992 / 1586));
-    const rows = Math.max(1, Math.floor(height / cell));
-    const dpr = window.devicePixelRatio || 1;
-    state.layout = { size, cell, columns, rows, width, height, dpr };
-    elementBank.style.setProperty("--world-cell-size", `${cell}px`);
-    elementBank.style.setProperty("--world-clay-size", `${size}px`);
-    canvas.style.height = `${height}px`;
-    canvas.width = Math.round(width * dpr);
-    canvas.height = Math.round(height * dpr);
-    context.setTransform(dpr, 0, 0, dpr, 0, 0);
-    if (previousLayout.width <= 1 || previousLayout.height <= 1) {
-      arrangeBlocks();
-    } else {
-      reflowBlocks(previousLayout);
-    }
-    renderElementBank();
-    drawMap();
-  }
-
-  function imageFrame() {
-    const { width, height } = state.layout;
-    const imageWidth = worldImage.naturalWidth || 1586;
-    const imageHeight = worldImage.naturalHeight || 992;
-    const scale = Math.max(width / imageWidth, height / imageHeight);
-    const drawWidth = imageWidth * scale;
-    const drawHeight = imageHeight * scale;
-    return {
-      x: (width - drawWidth) / 2,
-      y: (height - drawHeight) / 2,
-      width: drawWidth,
-      height: drawHeight
-    };
-  }
-
-  function gameHudLayout() {
-    const { width, size, cell } = state.layout;
-    const inset = 10;
-    const columns = Math.max(1, Math.floor((width - inset * 2) / cell));
-    const rows = Math.ceil(elementWords.length / columns);
-    const titleHeight = Math.max(38, Math.min(54, size * 0.82));
-    const gridTop = inset + titleHeight + 4;
-    const gridWidth = columns * cell;
-    const gridLeft = (width - gridWidth) / 2;
-    const gridHeight = rows * cell;
-    const bottom = gridTop + gridHeight + 8;
-    const tokens = elementWords.map((word, index) => {
-      const column = index % columns;
-      const row = Math.floor(index / columns);
-      const left = gridLeft + column * cell + (cell - size) / 2;
-      const top = gridTop + row * cell + (cell - size) / 2;
-      return { word, left, top, right: left + size, bottom: top + size };
-    });
-    return {
-      bounds: { left: 0, top: 0, right: width, bottom },
-      tokens,
-      titleHeight,
-      inset,
-      size
-    };
-  }
-
-  function overlapsGameHud(x, y, size) {
-    const hudBottom = gameHudLayout().bounds.bottom;
-    return x < state.layout.width && x + size > 0 && y < hudBottom && y + size > 0;
-  }
-
-  function pointInPolygon(x, y) {
-    let inside = false;
-    for (let i = 0, j = clearingPolygon.length - 1; i < clearingPolygon.length; j = i, i += 1) {
-      const [xi, yi] = clearingPolygon[i];
-      const [xj, yj] = clearingPolygon[j];
-      const crosses = (yi > y) !== (yj > y) &&
-        x < ((xj - xi) * (y - yi)) / (yj - yi) + xi;
-      if (crosses) inside = !inside;
-    }
-    return inside;
-  }
-
-  function isSafeCell(x, y, size, frame) {
-    const inset = Math.min(3, size / 10);
-    const corners = [
-      [x + inset, y + inset], [x + size - inset, y + inset],
-      [x + inset, y + size - inset], [x + size - inset, y + size - inset],
-      [x + size / 2, y + size / 2]
-    ];
-    return corners.every(([canvasX, canvasY]) => {
-      const imageX = (canvasX - frame.x) / frame.width;
-      const imageY = (canvasY - frame.y) / frame.height;
-      return pointInPolygon(imageX, imageY);
-    });
-  }
-
-  function clearingCells(cell, size) {
-    const { width, height } = state.layout;
-    const frame = imageFrame();
-    const inset = (cell - size) / 2;
-    const cells = [];
-    const columns = Math.floor(width / cell);
-    const rows = Math.floor(height / cell);
-    for (let row = 0; row < rows; row += 1) {
-      for (let column = 0; column < columns; column += 1) {
-        const x = column * cell + inset;
-        const y = row * cell + inset;
-        if (isSafeCell(x, y, size, frame)) cells.push({ x, y });
-      }
-    }
-    return cells;
-  }
-
-  function arrangeBlocks() {
-    const { size } = state.layout;
-    const frame = imageFrame();
-    const placed = [];
-    const placedBlocks = shuffle([...state.blocks]);
-    state.blocks.forEach(block => { block.unplaced = false; });
-    const overlapsPlaced = (x, y) => placed.some(other =>
-      x < other.x + size + 2 && x + size + 2 > other.x &&
-      y < other.y + size + 2 && y + size + 2 > other.y
-    );
-    const isOpen = (x, y, strictClearing) =>
-      (strictClearing ? isSafeCell(x, y, size, frame) : insideClearing(x, y, size, frame)) &&
-      !overlapsGameHud(x, y, size) &&
-      !overlapsPlaced(x, y);
-
-    // Try randomized positions in the clearing. If random packing leaves a
-    // small awkward gap, use a fine scan instead of sending blocks to (0, 0).
-    const findOpenPosition = (strictClearing) => {
-      const maxX = state.layout.width - size;
-      const maxY = state.layout.height - size;
-      for (let attempt = 0; attempt < 5000; attempt += 1) {
-        const x = Math.random() * maxX;
-        const y = Math.random() * maxY;
-        if (isOpen(x, y, strictClearing)) return { x, y };
-      }
-      for (let y = 0; y <= maxY; y += 2) {
-        for (let x = 0; x <= maxX; x += 2) {
-          if (isOpen(x, y, strictClearing)) return { x, y };
-        }
-      }
-      return null;
-    };
-
-    for (const block of placedBlocks) {
-      // The center-only fallback is used only for an unusually tight narrow
-      // viewport; it still keeps the clay inside the marked clearing.
-      const position = findOpenPosition(true) || findOpenPosition(false);
-      if (!position) {
-        block.unplaced = true;
-        continue;
-      }
-      block.unplaced = false;
-      block.x = position.x;
-      block.y = position.y;
-      placed.push(block);
-    }
-
-    // Keep the spacing metadata aligned with the canvas even though placement
-    // is free-form rather than restricted to a grid.
-    state.layout.columns = Math.floor(state.layout.width / state.layout.cell);
-    state.layout.rows = Math.floor(state.layout.height / state.layout.cell);
-  }
-
-  function reflowBlocks(previousLayout) {
-    const { size, width, height } = state.layout;
-    const frame = imageFrame();
-    const placed = [];
-    const orderedBlocks = [...state.blocks].sort((a, b) => {
-      const priority = block =>
-        (movementFor(block) ? 0 : 1) +
-        (block.id === state.selectedId ? 0 : 1) +
-        (block.unplaced ? 2 : 0);
-      return priority(a) - priority(b);
-    });
-    const overlapsPlaced = (x, y) => placed.some(other =>
-      x < other.x + size + 2 && x + size + 2 > other.x &&
-      y < other.y + size + 2 && y + size + 2 > other.y
-    );
-    const isOpen = (x, y) =>
-      (isSafeCell(x, y, size, frame) || insideClearing(x, y, size, frame)) &&
-      !overlapsGameHud(x, y, size) &&
-      !overlapsPlaced(x, y);
-    const bounded = (value, maximum) => Math.max(0, Math.min(maximum, value));
-    const findNear = (originX, originY) => {
-      const maxX = width - size;
-      const maxY = height - size;
-      const x = bounded(originX, maxX);
-      const y = bounded(originY, maxY);
-      if (isOpen(x, y)) return { x, y };
-
-      // Search outward from the scaled point so a resize only nudges a square
-      // when the new clearing boundary or a neighbor makes its old spot invalid.
-      const step = Math.max(3, Math.floor(size / 12));
-      const maxRadius = Math.max(width, height);
-      for (let radius = step; radius <= maxRadius; radius += step) {
-        const segments = Math.max(16, Math.ceil((Math.PI * 2 * radius) / step));
-        for (let index = 0; index < segments; index += 1) {
-          const angle = (index / segments) * Math.PI * 2;
-          const candidateX = bounded(x + Math.cos(angle) * radius, maxX);
-          const candidateY = bounded(y + Math.sin(angle) * radius, maxY);
-          if (isOpen(candidateX, candidateY)) return { x: candidateX, y: candidateY };
-        }
-      }
-
-      // A fine deterministic scan handles narrow remaining gaps on small views.
-      for (let scanY = 0; scanY <= maxY; scanY += step) {
-        for (let scanX = 0; scanX <= maxX; scanX += step) {
-          if (isOpen(scanX, scanY)) return { x: scanX, y: scanY };
-        }
-      }
-      return null;
-    };
-
-    for (const block of orderedBlocks) {
-      const oldCenterX = block.x + previousLayout.size / 2;
-      const oldCenterY = block.y + previousLayout.size / 2;
-      const desiredX = (oldCenterX / previousLayout.width) * width - size / 2;
-      const desiredY = (oldCenterY / previousLayout.height) * height - size / 2;
-      const position = findNear(desiredX, desiredY);
-      if (!position) {
-        block.unplaced = true;
-        continue;
-      }
-      block.x = position.x;
-      block.y = position.y;
-      block.unplaced = false;
-      placed.push(block);
-    }
-    state.layout.columns = Math.floor(width / state.layout.cell);
-    state.layout.rows = Math.floor(height / state.layout.cell);
-  }
-
-  function tintedSprite(sourceImage, colorMask, cache) {
-    if (cache.has(colorMask)) return cache.get(colorMask);
-    const tint = {
-      1: "rgb(190 55 48 / 25%)",
-      2: "rgb(68 143 73 / 25%)",
-      3: "rgb(222 192 55 / 25%)",
-      4: "rgb(65 112 193 / 25%)",
-      5: "rgb(196 67 157 / 25%)",
-      6: "rgb(61 183 184 / 25%)",
-      7: "rgb(238 239 228 / 32%)"
-    }[colorMask] || "rgb(48 51 57 / 50%)";
-    const sprite = document.createElement("canvas");
-    sprite.width = sourceImage.naturalWidth || 64;
-    sprite.height = sourceImage.naturalHeight || 64;
-    const spriteContext = sprite.getContext("2d");
-    if (sourceImage.complete && sourceImage.naturalWidth) {
-      spriteContext.drawImage(sourceImage, 0, 0, sprite.width, sprite.height);
-      spriteContext.globalCompositeOperation = "source-atop";
-      spriteContext.fillStyle = tint;
-      spriteContext.fillRect(0, 0, sprite.width, sprite.height);
-    }
-    cache.set(colorMask, sprite);
-    return sprite;
-  }
-
-  function tintedClay(colorMask) {
-    return tintedSprite(clayImage, colorMask, clayTintCache);
-  }
-
-  function tintedClod(colorMask) {
-    return tintedSprite(clodImage, colorMask, clodTintCache);
-  }
-
-  function tintedElementSprite(id, colorMask = 0) {
-    const sprite = elementSprites[id] ||
-      (["left-hand", "right-hand"].includes(id) ? elementSprites.hand : null) ||
-      (["left-fist", "right-fist"].includes(id) ? elementSprites.fist : null);
-    if (!sprite) return tintedClay(colorMask);
-    const key = `${id}:${colorMask}`;
-    if (elementTintCache.has(key)) return elementTintCache.get(key);
-    const tinted = tintedSprite(sprite, colorMask, new Map());
-    const transform = elementSpriteTransform(id);
-    if (!transform) {
-      elementTintCache.set(key, tinted);
-      return tinted;
-    }
-
-    const oriented = document.createElement("canvas");
-    oriented.width = tinted.width;
-    oriented.height = tinted.height;
-    const orientedContext = oriented.getContext("2d");
-    orientedContext.save();
-    orientedContext.translate(oriented.width / 2, oriented.height / 2);
-    if (transform.mirrorX || transform.mirrorY) {
-      orientedContext.scale(transform.mirrorX ? -1 : 1, transform.mirrorY ? -1 : 1);
-    }
-    if (transform.rotation) orientedContext.rotate(transform.rotation);
-    orientedContext.drawImage(tinted, -tinted.width / 2, -tinted.height / 2);
-    orientedContext.restore();
-    elementTintCache.set(key, oriented);
-    return oriented;
-  }
-
-  function elementSpriteTransform(id) {
-    // The supplied hand/fist art faces left. Keep the explicit left forms
-    // unchanged, while the unsided/default and right forms face right.
-    if (["hand", "right-hand", "fist", "right-fist"].includes(id)) {
-      return { mirrorX: true, mirrorY: false, rotation: 0 };
-    }
-    // The supplied arrow faces right. Mirror top-to-bottom as well as turning
-    // left so the light/shadow edges stay consistent with the other directions.
-    if (id === "left") return { mirrorX: false, mirrorY: true, rotation: Math.PI };
-    if (id === "up") return { mirrorX: false, mirrorY: false, rotation: -Math.PI / 2 };
-    // DOWN is the vertical mirror of the upward arrow.
-    if (id === "down") return { mirrorX: false, mirrorY: true, rotation: -Math.PI / 2 };
-    return null;
-  }
-
-  function tintedMiniGolem(colorMask) {
-    if (miniGolemTintCache.has(colorMask)) return miniGolemTintCache.get(colorMask);
-    const tint = {
-      1: "rgb(190 55 48 / 25%)",
-      2: "rgb(68 143 73 / 25%)",
-      3: "rgb(222 192 55 / 25%)",
-      4: "rgb(65 112 193 / 25%)",
-      5: "rgb(196 67 157 / 25%)",
-      6: "rgb(61 183 184 / 25%)",
-      7: "rgb(238 239 228 / 32%)"
-    }[colorMask] || "rgb(48 51 57 / 50%)";
-    const sprite = document.createElement("canvas");
-    sprite.width = miniGolemImage.naturalWidth || 64;
-    sprite.height = miniGolemImage.naturalHeight || 64;
-    const spriteContext = sprite.getContext("2d");
-    if (miniGolemImage.complete && miniGolemImage.naturalWidth) {
-      spriteContext.drawImage(miniGolemImage, 0, 0, sprite.width, sprite.height);
-      spriteContext.globalCompositeOperation = "source-atop";
-      spriteContext.fillStyle = tint;
-      spriteContext.fillRect(0, 0, sprite.width, sprite.height);
-    }
-    miniGolemTintCache.set(colorMask, sprite);
-    return sprite;
-  }
-
-  function drawMap() {
-    const { width, height, size } = state.layout;
-    context.clearRect(0, 0, width, height);
-    if (worldImage.complete && worldImage.naturalWidth) {
-      const frame = imageFrame();
-      context.drawImage(worldImage, frame.x, frame.y, frame.width, frame.height);
-    } else {
-      context.fillStyle = "#263328";
-      context.fillRect(0, 0, width, height);
-    }
-    drawGameHud();
-    for (const block of state.blocks) {
-      if (block.unplaced) continue;
-      const selected = block.id === state.selectedId;
-      const focused = block.id === state.focusedId;
-      const target = block.id === state.targetId;
-      const meaning = describe(block.contents);
-      const isCreature = ["sense", "motive", "golem"].includes(meaning.category);
-      const sightIsTrue = sensorFor(block) !== null && block.senseActive;
-      const colorMask = meaning.colorIntentMask ?? meaning.colorMask ?? 0;
-      const isClodLiteral = meaning.id === "clod" || meaning.clodLiteral === true || meaning.objectKind === "clod";
-      const elementSprite = elementSprites[meaning.id];
-      if (sightIsTrue) {
-        const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches === true;
-        const pulse = reducedMotion ? 1 : 0.5 + (Math.sin(performance.now() / 260) + 1) * 0.18;
-        const centerX = block.x + size / 2;
-        const centerY = block.y + size / 2;
-        const radius = size * 0.9;
-        const glow = context.createRadialGradient(centerX, centerY, size * 0.12, centerX, centerY, radius);
-        glow.addColorStop(0, `rgb(255 224 132 / ${Math.round(pulse * 72)}%)`);
-        glow.addColorStop(0.55, `rgb(255 214 105 / ${Math.round(pulse * 38)}%)`);
-        glow.addColorStop(1, "rgb(255 214 105 / 0%)");
-        context.save();
-        context.fillStyle = glow;
-        context.beginPath();
-        context.arc(centerX, centerY, radius, 0, Math.PI * 2);
-        context.fill();
-        context.restore();
-      }
-      if (isClodLiteral && clodImage.complete && clodImage.naturalWidth) {
-        context.drawImage(tintedClod(colorMask), block.x, block.y, size, size);
-      } else if (elementSprite?.complete && elementSprite.naturalWidth) {
-        const art = tintedElementSprite(meaning.id, colorMask);
-        context.drawImage(art, block.x, block.y, size, size);
-      } else if (isCreature && miniGolemImage.complete && miniGolemImage.naturalWidth) {
-        context.save();
-        // The brighter face and crisp dark features read against both the clay
-        // square and the forest; the soft rim separates the small limbs too.
-        context.filter = "brightness(1.12) contrast(1.5)";
-        context.shadowColor = "rgb(255 235 185 / 92%)";
-        context.shadowBlur = Math.max(1.5, size * 0.035);
-        context.drawImage(tintedMiniGolem(colorMask), block.x, block.y, size, size);
-        context.restore();
-      } else if (clayImage.complete && clayImage.naturalWidth) {
-        context.drawImage(tintedClay(meaning.colorMask), block.x, block.y, size, size);
-      } else {
-        context.fillStyle = "#aaa7a0";
-        context.fillRect(block.x, block.y, size, size);
-      }
-      drawHeldItems(block, size);
-      if (["do-move-left", "do-move-right", "do-move-up", "do-move-down", "do-move-random"].includes(meaning.id)) {
-        context.strokeStyle = "#d4e2a4";
-        context.lineWidth = 2;
-        context.setLineDash([4, 3]);
-        context.strokeRect(block.x + 2, block.y + 2, size - 4, size - 4);
-        context.setLineDash([]);
-      }
-      if (target || selected || focused) {
-        context.strokeStyle = selected ? "#f4c27a" : target ? "#ffe19a" : "#e8dfc9";
-        context.lineWidth = selected || target ? 3 : 2;
-        context.strokeRect(block.x + 1, block.y + 1, size - 2, size - 2);
-      }
-      const labelY = block.y + size * (isCreature ? 0.42 : 0.5);
-      drawFaceLabel(context, block.contents, block.x + size / 2, labelY, size);
-    }
-  }
-
-  function drawHeldItems(block, size) {
-    const heldItems = block.heldItems;
-    if (!heldItems || (!heldItems.left && !heldItems.right)) return;
-    for (const side of ["left", "right"]) {
-      const heldClod = heldItems[side];
-      if (!heldClod) continue;
-      const contents = heldClod.contents;
-      const meaning = describe(contents);
-      const sprite = elementSprites[meaning.id];
-      const colorMask = meaning.colorIntentMask ?? meaning.colorMask ?? 0;
-      const isClodLiteral = meaning.id === "clod" || meaning.clodLiteral === true || meaning.objectKind === "clod";
-      // Held clods should read clearly over the golem's hands. The previous
-      // 34% overlay was too small; 51% is a 50% increase and stays within the
-      // golem tile when anchored to its lower edge.
-      const itemSize = size * 0.51;
-      const x = block.x + (side === "left" ? size * 0.02 : size * 0.47);
-      const y = block.y + size * 0.48;
-      context.save();
-      context.globalAlpha = 0.96;
-      if (isClodLiteral && clodImage.complete && clodImage.naturalWidth) {
-        context.drawImage(tintedClod(colorMask), x, y, itemSize, itemSize);
-      } else if (sprite?.complete && sprite.naturalWidth) {
-        const art = tintedElementSprite(meaning.id, colorMask);
-        context.drawImage(art, x, y, itemSize, itemSize);
-      } else {
-        const art = tintedClay(colorMask);
-        context.drawImage(art, x, y, itemSize, itemSize);
-      }
-      const label = faceLabel(contents);
-      context.font = `bold ${Math.max(6, itemSize * 0.31)}px "Atkinson Hyperlegible Next", sans-serif`;
-      context.textAlign = "center";
-      context.textBaseline = "middle";
-      context.lineWidth = 2;
-      context.strokeStyle = "rgb(18 19 21 / 95%)";
-      context.fillStyle = "#fff7e7";
-      context.strokeText(label, x + itemSize / 2, y + itemSize * 0.52, itemSize - 2);
-      context.fillText(label, x + itemSize / 2, y + itemSize * 0.52, itemSize - 2);
-      context.restore();
-    }
-  }
-
-  function drawGameHud() {
-    const hud = gameHudLayout();
-    const { width } = state.layout;
-    context.save();
-    context.fillStyle = "rgb(25 30 29 / 72%)";
-    context.fillRect(0, 0, width, hud.bounds.bottom);
-    context.strokeStyle = state.drag?.overTopPanel
-      ? "rgb(246 187 123 / 88%)"
-      : "rgb(190 195 170 / 42%)";
-    context.lineWidth = state.drag?.overTopPanel ? 2 : 1;
-    context.beginPath();
-    context.moveTo(0, hud.bounds.bottom - 0.5);
-    context.lineTo(width, hud.bounds.bottom - 0.5);
-    context.stroke();
-
-    const gameTitle = "MANX MUDMEN - Hop Tu Naa Hackathon";
-    const titleSize = Math.max(12, Math.min(34, hud.size * 0.56, (width - 28) / (gameTitle.length * 0.52)));
-    context.textAlign = "left";
-    context.textBaseline = "middle";
-    context.font = `${titleSize}px "Creepster", Georgia, serif`;
-    context.fillStyle = "#fff2df";
-    context.shadowColor = "rgb(0 0 0 / 80%)";
-    context.shadowBlur = 3;
-    context.fillText(gameTitle, 14, hud.inset + hud.titleHeight / 2, width - 28);
-    context.shadowBlur = 0;
-
-    for (const token of hud.tokens) {
-      const contents = element(token.word);
-      const meaning = describe(contents);
-      const sprite = elementSprites[meaning.id];
-      const art = sprite?.complete && sprite.naturalWidth
-        ? tintedElementSprite(meaning.id, meaning.colorIntentMask ?? meaning.colorMask ?? 0)
-        : tintedClay(meaning.colorIntentMask ?? meaning.colorMask ?? 0);
-      if (art.width && art.height) context.drawImage(art, token.left, token.top, hud.size, hud.size);
-      context.fillStyle = "#fff7e7";
-      context.strokeStyle = "rgb(18 19 21 / 92%)";
-      context.lineWidth = Math.max(1.5, hud.size * 0.04);
-      context.textAlign = "center";
-      context.textBaseline = "middle";
-      context.font = `${faceFontSize(faceLabel(contents), hud.size)}px "Creepster", Georgia, serif`;
-      context.shadowColor = "rgb(255 247 224 / 78%)";
-      context.shadowBlur = 2;
-      const centerX = (token.left + token.right) / 2;
-      const centerY = (token.top + token.bottom) / 2;
-      context.strokeText(faceLabel(contents), centerX, centerY, hud.size - 8);
-      context.fillText(faceLabel(contents), centerX, centerY, hud.size - 8);
-      context.shadowBlur = 0;
-    }
-
-    if (palettePointerDrag?.moved) {
-      const drag = palettePointerDrag;
-      const left = drag.point.x - drag.offsetX;
-      const top = drag.point.y - drag.offsetY;
-      const meaning = describe(element(drag.word));
-      const sprite = elementSprites[meaning.id];
-      const art = sprite?.complete && sprite.naturalWidth
-        ? tintedElementSprite(meaning.id, meaning.colorIntentMask ?? meaning.colorMask ?? 0)
-        : tintedClay(meaning.colorIntentMask ?? meaning.colorMask ?? 0);
-      context.globalAlpha = 0.86;
-      if (art.width && art.height) context.drawImage(art, left, top, hud.size, hud.size);
-      context.fillStyle = "#fff7e7";
-      context.strokeStyle = "rgb(18 19 21 / 92%)";
-      context.lineWidth = 2;
-      context.textAlign = "center";
-      context.textBaseline = "middle";
-      context.font = `${faceFontSize(faceLabel(element(drag.word)), hud.size)}px "Creepster", Georgia, serif`;
-      const label = faceLabel(element(drag.word));
-      context.strokeText(label, left + hud.size / 2, top + hud.size / 2, hud.size - 8);
-      context.fillText(label, left + hud.size / 2, top + hud.size / 2, hud.size - 8);
-    }
-    context.restore();
-  }
-
-  function faceFontSize(label, size) {
-    return Math.max(9, Math.min(20, size * 0.34 - Math.max(0, label.length - 7) * 0.48));
-  }
-
-  function drawFaceLabel(targetContext, expression, centerX, centerY, size) {
-    const meaning = describe(expression);
-    const pathways = pathwaysForMeaning(meaning);
-    const lines = meaning.id === "compound-golem" && pathways.length > 1
-      ? pathways.flatMap(pathway => [
-          pathway.sense.label.toLowerCase(),
-          `then ${pathway.motive.label.toLowerCase()}`
-        ])
-      : [faceLabel(expression)];
-    const maxWidth = size - 8;
-    const maxHeight = size - 6;
-    const lineHeight = maxHeight / lines.length;
-    const longestLine = Math.max(...lines.map(line => line.length));
-    const fontSize = lines.length > 1
-      ? Math.max(3, Math.min(20, size * 0.24, lineHeight * 0.76, maxWidth / (longestLine * 0.56)))
-      : faceFontSize(lines[0], size);
-    const blockHeight = lineHeight * lines.length;
-    const firstY = centerY - blockHeight / 2 + lineHeight / 2;
-
-    targetContext.fillStyle = "#fff7e7";
-    targetContext.strokeStyle = "rgb(18 19 21 / 92%)";
-    targetContext.lineWidth = Math.min(2.4, fontSize * 0.2);
-    targetContext.textAlign = "center";
-    targetContext.textBaseline = "middle";
-    targetContext.font = `${fontSize}px "Creepster", Georgia, serif`;
-    targetContext.shadowColor = "rgb(255 247 224 / 90%)";
-    targetContext.shadowBlur = 2;
-    lines.forEach((line, index) => {
-      const y = lines.length > 1 ? firstY + index * lineHeight : centerY;
-      targetContext.strokeText(line, centerX, y, maxWidth);
-      targetContext.fillText(line, centerX, y, maxWidth);
-    });
-    targetContext.shadowBlur = 0;
-  }
-
-  function renderDetail() {
-    const selected = allBlocks().find(block => block.id === state.selectedId);
-    if (!selected) {
-      detail.innerHTML = '<p class="detail-placeholder">No clod selected.</p>';
-      return;
-    }
-    const meaning = describe(selected.contents);
-    const provisional = meaning.certainty === "provisional" || meaning.certainty === "unresolved";
-    const sensor = sensorFor(selected);
-    const pathways = pathwaysForMeaning(meaning);
-    const sightRangeCells = meaning.sightRangeCells || 3;
-    const senseKind = sensor?.senseKind || (sensor?.id === "while-hand" ? "touch" : "see");
-    const positiveSenseDescription = sensor ? senseConditionDescription(sensor) : `clay within ${sightRangeCells} cells`;
-    const senseDescription = sensor?.negated
-      ? `no ${senseKind === "touch" ? "other clay clod is adjacent" : `clay is within ${sightRangeCells} cells`}`
-      : positiveSenseDescription;
-    const sightStatus = sensor
-      ? selected.senseActive
-        ? `Sensing true Â· ${senseDescription}`
-        : `Sensing false Â· ${positiveSenseDescription}`
-      : null;
-    const movementStatuses = {
-      "do-move-left": "Prototype movement experiment Â· the language rule remains open",
-      "do-move-right": "Prototype movement experiment Â· the language rule remains open",
-      "do-move-up": "Prototype movement experiment Â· the language rule remains open",
-      "do-move-down": "Prototype movement experiment Â· the language rule remains open",
-      "do-move-random": "Tentative random-walk experiment Â· the language rule remains open"
-    };
-    const pairedMovementStatus = pathways.length
-      ? pathways.length > 1
-        ? "Each sense is checked independently; its response runs when true."
-        : selected.senseActive
-          ? `Prototype response active Â· ${senseDescription}`
-          : `Prototype response waiting Â· acts only while ${sensor?.label?.toLowerCase() || "the sense"} is true`
-      : null;
-    const readingStatus = pairedMovementStatus || sightStatus || movementStatuses[meaning.id] ||
-      (provisional ? "Proposed reading Â· behavior not simulated" : "Element");
-    detail.innerHTML = `<dl class="detail-list"><div><dt>Construction</dt><dd class="detail-construction"></dd></div><div><dt>Natural language</dt><dd class="detail-reading"></dd><small class="reading-status">${readingStatus}</small></div></dl>`;
-    detail.querySelector(".detail-construction").textContent = construction(selected.contents);
-    detail.querySelector(".detail-reading").textContent = plainLanguage(selected.contents);
-  }
-
-  function setStatus(message) {
-    status.textContent = message;
-  }
-
-  function hitTest(point, exceptId = null) {
-    const { size } = state.layout;
-    for (let i = state.blocks.length - 1; i >= 0; i -= 1) {
-      const block = state.blocks[i];
-      if (block.unplaced) continue;
-      if (block.id === exceptId) continue;
-      if (point.x >= block.x && point.x <= block.x + size &&
-          point.y >= block.y && point.y <= block.y + size) return block;
-    }
-    return null;
-  }
-
-  function pointerIsOverTopPanel(clientX, clientY) {
-    const point = canvasPoint({ clientX, clientY });
-    return pointInsideRect(point.x, point.y, gameHudLayout().bounds);
-  }
-
-  function discardBlock(block) {
-    state.blocks = state.blocks.filter(candidate => candidate.id !== block.id);
-    if (state.selectedId === block.id) state.selectedId = null;
-    if (state.focusedId === block.id) state.focusedId = null;
-    if (state.targetId === block.id) state.targetId = null;
-    if (!state.blocks.some(hasActivePrototypeBehavior)) stopActiveMovement();
-    renderDetail();
-    drawMap();
-    setStatus(`${faceLabel(block.contents)} discarded.`);
-  }
-
-  function canvasPoint(event) {
-    const rect = canvas.getBoundingClientRect();
-    return {
-      x: (event.clientX - rect.left) * (state.layout.width / rect.width),
-      y: (event.clientY - rect.top) * (state.layout.height / rect.height)
-    };
-  }
-
-  function insideClearing(x, y, size, frame) {
-    const centerX = (x + size / 2 - frame.x) / frame.width;
-    const centerY = (y + size / 2 - frame.y) / frame.height;
-    return pointInPolygon(centerX, centerY);
-  }
-
-  function overlapsAnotherBlock(block, x, y) {
-    const size = state.layout.size;
-    return state.blocks.some(other => !other.unplaced && other.id !== block.id &&
-      x < other.x + size && x + size > other.x &&
-      y < other.y + size && y + size > other.y);
-  }
-
-  function dropInClearing(block, desiredX, desiredY) {
-    const size = state.layout.size;
-    const maxX = state.layout.width - size;
-    const maxY = state.layout.height - size;
-    const x = Math.max(0, Math.min(maxX, desiredX));
-    const y = Math.max(0, Math.min(maxY, desiredY));
-    const frame = imageFrame();
-    const canPlace = (candidateX, candidateY) =>
-      insideClearing(candidateX, candidateY, size, frame) &&
-      !overlapsAnotherBlock(block, candidateX, candidateY);
-    if (canPlace(x, y)) {
-      block.unplaced = false;
-      block.x = x;
-      block.y = y;
-      return true;
-    }
-
-    // Search continuously around the requested point, then across the rest of
-    // the clearing. There is no fixed clay count or safe-cell-slot ceiling.
-    const step = Math.max(2, Math.floor(size / 16));
-    const maxRadius = Math.max(state.layout.width, state.layout.height);
-    for (let radius = step; radius <= maxRadius; radius += step) {
-      for (let offset = -radius; offset <= radius; offset += step) {
-        const candidates = [
-          [x + offset, y - radius], [x + offset, y + radius],
-          [x - radius, y + offset], [x + radius, y + offset]
-        ];
-        for (const [candidateX, candidateY] of candidates) {
-          const boundedX = Math.max(0, Math.min(maxX, candidateX));
-          const boundedY = Math.max(0, Math.min(maxY, candidateY));
-          if (!canPlace(boundedX, boundedY)) continue;
-          block.unplaced = false;
-          block.x = boundedX;
-          block.y = boundedY;
-          return true;
-        }
-      }
-    }
-    return false;
-  }
-
-  function addPaletteElement(word, point, tryCombine, pointerPoint = point) {
-    // Use the actual drop pointer first. The bank sprite's grab offset can
-    // otherwise shift its visual center off the target square.
-    const target = tryCombine ? hitTest(pointerPoint) || hitTest(point) : null;
-    const block = makeBlock(`bank-copy-${++state.paletteCopyCount}`, element(word));
-    block.x = point.x - state.layout.size / 2;
-    block.y = point.y - state.layout.size / 2;
-    state.blocks.push(block);
-    if (target && combine(target, block)) {
-      startActiveMovement();
-      return;
-    }
-    if (!dropInClearing(block, block.x, block.y)) {
-      state.blocks = state.blocks.filter(candidate => candidate.id !== block.id);
-      setStatus("The clearing is full; there is no open space for another clod.");
-      return;
-    }
-    state.selectedId = block.id;
-    state.focusedId = block.id;
-    renderDetail();
-    drawMap();
-    setStatus(tryCombine && target
-      ? `${word.toLowerCase()} does not combine with that clod yet; a copy was placed in the clearing.`
-      : `A copy of ${word.toLowerCase()} was added to the clearing. The bank source remains.`);
-    startActiveMovement();
-  }
-
-  function pointInsideRect(x, y, rect) {
-    return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
-  }
-
-  function paletteDropTarget(clientX, clientY) {
-    const point = canvasPoint({ clientX, clientY });
-    const hud = gameHudLayout();
-    const rect = canvas.getBoundingClientRect();
-    const insideCanvas = clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom;
-    if (!insideCanvas) return "outside";
-    if (pointInsideRect(point.x, point.y, hud.bounds)) return "bank";
-    return "garden";
-  }
-
-  function updatePaletteDropTarget(drag, clientX, clientY) {
-    const region = paletteDropTarget(clientX, clientY);
-    const point = canvasPoint({ clientX, clientY });
-    const combineTarget = region === "garden" ? hitTest(point) : null;
-    const target = combineTarget ? "combine" : region;
-    if (drag.dropTarget === target) return;
-    drag.dropTarget = target;
-    if (target === "combine") {
-      setStatus(`Drop ${drag.word.toLowerCase()} onto ${faceLabel(combineTarget.contents)} to combine directly from the bank.`);
-    } else if (target === "garden") {
-      setStatus("Drop in open garden to add a copy, or directly onto another clod to combine.");
-    } else if (target === "bank") {
-      setStatus("Drop back in the element panel to cancel; the bank source stays available.");
-    } else {
-      setStatus("Drop clay in the garden to add a copy. The bank source stays in place.");
-    }
-  }
-
-  function clearPaletteDrag() {
-    palettePointerDrag = null;
-    drawMap();
-  }
-
-  function movePalettePointerDrag(event) {
-    const drag = palettePointerDrag;
-    if (!drag || event.pointerId !== drag.pointerId) return;
-    const distance = Math.hypot(event.clientX - drag.startClientX, event.clientY - drag.startClientY);
-    if (!drag.moved && distance < 6) return;
-    event.preventDefault();
-    drag.moved = true;
-    drag.point = canvasPoint(event);
-    updatePaletteDropTarget(drag, event.clientX, event.clientY);
-    drawMap();
-  }
-
-  function finishPalettePointerDrag(event) {
-    const drag = palettePointerDrag;
-    if (!drag || event.pointerId !== drag.pointerId) return;
-    drag.point = canvasPoint(event);
-    palettePointerDrag = null;
-    drawMap();
-    if (!drag.moved) {
-      addPaletteElement(drag.word, { x: state.layout.width / 2, y: state.layout.height / 2 }, false);
-      return;
-    }
-
-    lastPaletteDropTime = performance.now();
-    const target = paletteDropTarget(event.clientX, event.clientY);
-    if (target === "bank") {
-      setStatus("No copy added. The element remains available in the bank.");
-      return;
-    }
-    if (target === "garden") {
-      const dropPoint = {
-        x: drag.point.x - drag.offsetX + state.layout.size / 2,
-        y: drag.point.y - drag.offsetY + state.layout.size / 2
-      };
-      addPaletteElement(drag.word, dropPoint, true, drag.point);
-      return;
-    }
-    setStatus("No clay was added. Drop the element over the garden; the bank source remains available.");
-  }
-
-  window.addEventListener("pointermove", movePalettePointerDrag, { passive: false });
-  window.addEventListener("pointerup", finishPalettePointerDrag);
-  window.addEventListener("pointercancel", event => {
-    const drag = palettePointerDrag;
-    if (!drag || event.pointerId !== drag.pointerId) return;
-    clearPaletteDrag();
-    if (drag.moved) setStatus("Element drag cancelled. The bank source remains available.");
-  });
-
-  function renderElementBank() {
-    elementBank.replaceChildren();
-    for (const word of elementWords) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "element-token";
-      const contents = element(word);
-      const meaning = describe(contents);
-      const spritePath = elementSpritePaths[meaning.id];
-      const sprite = document.createElement("img");
-      sprite.className = "element-token-art";
-      sprite.alt = "";
-      sprite.draggable = false;
-      sprite.src = spritePath
-        ? tintedElementSprite(meaning.id, meaning.colorIntentMask ?? meaning.colorMask ?? 0).toDataURL()
-        : tintedClay(meaning.colorIntentMask ?? meaning.colorMask ?? 0).toDataURL();
-      button.append(sprite);
-      const label = document.createElement("span");
-      label.className = "element-token-label";
-      label.textContent = faceLabel(contents);
-      label.style.fontSize = `${faceFontSize(label.textContent, state.layout.size)}px`;
-      button.append(label);
-      button.dataset.elementWord = word;
-      button.draggable = false;
-      button.setAttribute("aria-label", `Add a copy of ${faceLabel(contents)} to the game world`);
-      elementBank.append(button);
-    }
-  }
-
-  elementBank.addEventListener("click", event => {
-    const button = event.target.closest("[data-element-word]");
-    if (!button || performance.now() - lastPaletteDropTime < 400) return;
-    addPaletteElement(button.dataset.elementWord, {
-      x: state.layout.width / 2,
-      y: state.layout.height / 2
-    }, false);
-  });
-
-  const movementIds = ["do-move-left", "do-move-right", "do-move-up", "do-move-down", "do-move-random"];
-
-  function pathwaysForMeaning(meaning) {
-    if (meaning.id === "golem-pair") {
-      return meaning.pathways || [{
-        sense: meaning.sense,
-        motive: meaning.motive,
-        behaviorImplemented: meaning.behaviorImplemented
-      }];
-    }
-    return meaning.id === "compound-golem" ? meaning.pathways || [] : [];
-  }
-
-  function pathwayStateKey(index, pathway) {
-    return `${index}:${pathway.sense.id}:${pathway.motive.id}`;
-  }
-
-  function responseActionFor(motive) {
-    const actions = {
-      "do-fist": { type: "grab" },
-      "do-left-fist": { type: "grab", side: "left" },
-      "do-right-fist": { type: "grab", side: "right" },
-      "do-hand": { type: "drop" },
-      "do-left-hand": { type: "drop", side: "left" },
-      "do-right-hand": { type: "drop", side: "right" }
-    };
-    return actions[motive.id] || null;
-  }
-
-  function movementFor(block) {
-    const meaning = describe(block.contents);
-    if (movementIds.includes(meaning.id)) return { action: meaning, conditioned: false };
-    const pathways = pathwaysForMeaning(meaning);
-    const activePath = pathways.find((pathway, index) =>
-      pathway.behaviorImplemented && movementIds.includes(pathway.motive?.id) &&
-      block.pathwaySenseStates?.[pathwayStateKey(index, pathway)] === true
-    );
-    if (activePath) {
-      return { action: activePath.motive, conditioned: true };
-    }
-    return null;
-  }
-
-  function sensorFor(block) {
-    const meaning = describe(block.contents);
-    if (activeSenseIds.includes(meaning.id)) return meaning;
-    const pathway = pathwaysForMeaning(meaning).find(item =>
-      item.behaviorImplemented && activeSenseIds.includes(item.sense?.id)
-    );
-    if (pathway) return pathway.sense;
-    return null;
-  }
-
-  function senseConditionDescription(sense) {
-    const senseKind = sense.senseKind || (sense.id === "while-hand" ? "touch" : "see");
-    if (senseKind === "hold") return sense.handSide
-      ? `the ${sense.handSide} hand is holding clay`
-      : "either hand is holding clay";
-    if (senseKind === "touch") {
-      const colorNames = { 1: "red", 2: "green", 3: "yellow", 4: "blue", 5: "magenta", 6: "cyan", 7: "white" };
-      const color = colorNames[sense.touchColorMask];
-      if (sense.handSide) return `another clay clod within reach of the ${sense.handSide} hand`;
-      if (sense.touchObjectKind === "hand") return "a hand clod is adjacent";
-      if (sense.touchObjectKind === "clod" && color) return `a ${color} clod is adjacent`;
-      if (color) return `a clay clod with ${color} pigment is adjacent`;
-      return "another clay clod is adjacent";
-    }
-    const range = sense.sightRangeCells || 3;
-    const colorNames = { 1: "red", 2: "green", 3: "yellow", 4: "blue", 5: "magenta", 6: "cyan", 7: "white" };
-    const directionWords = { left: "to the left", right: "to the right", up: "above", down: "below" };
-    if (sense.direction) return `another clay clod is directly ${directionWords[sense.direction]} within ${range} cells`;
-    const color = colorNames[sense.sightColorMask];
-    return color
-      ? `a clay clod with ${color} pigment is within ${range} cells`
-      : `clay within ${range} cells`;
-  }
-
-  function sensorIsTrue(block, sense) {
-    const centerX = block.x + state.layout.size / 2;
-    const centerY = block.y + state.layout.size / 2;
-    const others = state.blocks.filter(other => !other.unplaced && other.id !== block.id);
-    // A palette drag is a visible clay copy while it moves over the garden.
-    // Let sensors inspect that preview without inserting it into game state,
-    // so grab/drop logic cannot treat the bank copy as a real movable clod.
-    if (palettePointerDrag?.moved && palettePointerDrag.dropTarget !== "bank" &&
-        palettePointerDrag.dropTarget !== "outside") {
-      const drag = palettePointerDrag;
-      others.push({
-        id: "palette-drag-preview",
-        contents: element(drag.word),
-        x: drag.point.x - drag.offsetX,
-        y: drag.point.y - drag.offsetY,
-        unplaced: false
-      });
-    }
-    const senseKind = sense.senseKind || (sense.id === "while-hand" ? "touch" : "see");
-    let positiveResult = false;
-    if (senseKind === "see" && sense.direction) {
-      const range = state.layout.cell * (sense.sightRangeCells || 3);
-      const laneTolerance = state.layout.cell / 2;
-      positiveResult = others.some(other => {
-        const dx = other.x - block.x;
-        const dy = other.y - block.y;
-        if (sense.direction === "up") return Math.abs(dx) <= laneTolerance && dy < 0 && -dy <= range;
-        if (sense.direction === "down") return Math.abs(dx) <= laneTolerance && dy > 0 && dy <= range;
-        if (sense.direction === "left") return Math.abs(dy) <= laneTolerance && dx < 0 && -dx <= range;
-        if (sense.direction === "right") return Math.abs(dy) <= laneTolerance && dx > 0 && dx <= range;
-        return false;
-      });
-    } else if (senseKind === "see") {
-      const range = state.layout.cell * (sense.sightRangeCells || 3);
-      positiveResult = others.some(other => {
-        const colorMask = describe(other.contents).colorIntentMask ?? describe(other.contents).colorMask ?? 0;
-        if (Number.isInteger(sense.sightColorMask) &&
-            (colorMask & sense.sightColorMask) !== sense.sightColorMask) return false;
-        return Math.hypot(
-          (other.x + state.layout.size / 2) - centerX,
-          (other.y + state.layout.size / 2) - centerY
-        ) <= range;
-      });
-    } else if (senseKind === "hold") {
-      const hands = block.heldItems || {};
-      positiveResult = sense.handSide ? Boolean(hands[sense.handSide]) : Boolean(hands.left || hands.right);
-    } else if (senseKind === "touch") {
-      // The clearing allows free placement, so touch should be based on the
-      // gap between square clods rather than a fixed center-to-center cell
-      // radius. The small tolerance accommodates the normal gap between
-      // neighboring pieces in the garden.
-      const touchGap = Math.max(8, state.layout.cell - state.layout.size + 2);
-      positiveResult = others.some(other => {
-        const otherCenterX = other.x + state.layout.size / 2;
-        if (sense.handSide === "left" && otherCenterX >= centerX) return false;
-        if (sense.handSide === "right" && otherCenterX <= centerX) return false;
-        const meaning = describe(other.contents);
-        if (sense.touchObjectKind && meaning.objectKind !== sense.touchObjectKind) return false;
-        if (Number.isInteger(sense.touchColorMask)) {
-          const colorMask = meaning.colorIntentMask ?? meaning.colorMask ?? 0;
-          if ((colorMask & sense.touchColorMask) !== sense.touchColorMask) return false;
-        }
-        const gapX = Math.max(0, Math.abs(otherCenterX - centerX) - state.layout.size);
-        const otherCenterY = other.y + state.layout.size / 2;
-        const gapY = Math.max(0, Math.abs(otherCenterY - centerY) - state.layout.size);
-        return gapX <= touchGap && gapY <= touchGap;
-      });
-    }
-    return sense.negated ? !positiveResult : positiveResult;
-  }
-
-  function hasActivePrototypeBehavior(block) {
-    const meaning = describe(block.contents);
-    const pathways = pathwaysForMeaning(meaning);
-    return movementFor(block) !== null || sensorFor(block) !== null || actionFor(block) !== null ||
-      pathways.some(pathway => pathway.behaviorImplemented && responseActionFor(pathway.motive));
-  }
-
-  function actionFor(block) {
-    return responseActionFor(describe(block.contents));
-  }
-
-  function tickActiveMovement() {
-    const now = performance.now();
-    const elapsed = lastMovementTime === null ? 0 : Math.min((now - lastMovementTime) / 1000, 0.1);
-    lastMovementTime = now;
-    if (!state.blocks.some(hasActivePrototypeBehavior)) {
-      window.clearInterval(movementTimer);
-      movementTimer = null;
-      lastMovementTime = null;
-      return;
-    }
-
-    let moved = false;
-    let handChanged = false;
-    let sightChanged = false;
-    const activePathways = [];
-    const sensors = [];
-    for (const block of state.blocks) {
-      const pathways = pathwaysForMeaning(describe(block.contents));
-      if (pathways.length) {
-        const states = block.pathwaySenseStates || (block.pathwaySenseStates = {});
-        let anyActive = false;
-        pathways.forEach((pathway, index) => {
-          if (!pathway.behaviorImplemented || !activeSenseIds.includes(pathway.sense.id)) return;
-          const key = pathwayStateKey(index, pathway);
-          const wasInitialized = typeof states[key] === "boolean";
-          const wasActive = states[key];
-          const isTrue = sensorIsTrue(block, pathway.sense);
-          states[key] = isTrue;
-          anyActive ||= isTrue;
-          sensors.push({ block, sense: pathway.sense, pathway });
-          activePathways.push({ block, pathway, index, key, active: isTrue });
-          if (wasInitialized && wasActive !== isTrue) sightChanged = true;
-          if (wasInitialized && wasActive !== isTrue) {
-            const condition = senseConditionDescription(pathway.sense);
-            const truth = isTrue
-              ? (pathway.sense.negated ? `no ${condition}` : condition)
-              : (pathway.sense.negated ? condition : `no ${condition}`);
-            setStatus(`${pathway.sense.label.toLowerCase()} then ${pathway.motive.label.toLowerCase()} is ${isTrue ? "true" : "false"}: ${truth}.`);
-          }
-        });
-        if (block.senseActive !== anyActive) {
-          block.senseActive = anyActive;
-          sightChanged = true;
-        }
-        if (sightChanged && state.selectedId === block.id) renderDetail();
-      } else {
-        const sense = sensorFor(block);
-        if (!sense) continue;
-        const wasInitialized = typeof block.senseActive === "boolean";
-        const isTrue = sensorIsTrue(block, sense);
-        sensors.push({ block, sense });
-        if (block.senseActive !== isTrue) {
-          block.senseActive = isTrue;
-          sightChanged = true;
-          if (state.selectedId === block.id) renderDetail();
-          if (wasInitialized) {
-            const condition = senseConditionDescription(sense);
-            setStatus(`while ${sense.label.toLowerCase()} is ${isTrue ? "true" : "false"}: ${condition}.`);
-          }
-        }
-      }
-    }
-
-    const actions = [];
-    for (const block of state.blocks) {
-      const pathways = pathwaysForMeaning(describe(block.contents));
-      if (!pathways.length) {
-        const action = actionFor(block);
-        if (action) actions.push({ block, action, key: null });
-        continue;
-      }
-      for (const entry of activePathways) {
-        if (entry.block.id !== block.id || !entry.active) continue;
-        const action = responseActionFor(entry.pathway.motive);
-        if (action) actions.push({ block, action, key: entry.key });
-      }
-    }
-    for (const { block, action, key } of actions) {
-      if (!state.blocks.some(current => current.id === block.id)) continue;
-      // Keep a dragged golem's response behavior live, except grabbing: a grab
-      // during the user's drag can pull another clod away from the pointer.
-      if (action.type === "grab" && state.drag?.block.id === block.id) continue;
-      if (key === null) {
-        if (now < (block.nextActionAt || 0)) continue;
-        block.nextActionAt = now + 700;
-      } else {
-        const nextActions = block.nextPathActionAt || (block.nextPathActionAt = {});
-        if (now < (nextActions[key] || 0)) continue;
-        nextActions[key] = now + 700;
-      }
-      const changed = action.type === "grab"
-        ? grabAdjacentClay(block, action.side)
-        : dropHeldClay(block, action.side);
-      if (changed) handChanged = true;
-    }
-    const movers = state.blocks.map(block => ({ block, movement: movementFor(block) }))
-      .filter(item => item.movement);
-    const frame = imageFrame();
-
-    for (const { block, movement } of movers) {
-      if (state.drag?.block.id === block.id || (movement.conditioned && !block.senseActive)) continue;
-      const movementId = movement.action.id;
-      if (movementId === "do-move-random" && (!block.nextDirectionChange || now >= block.nextDirectionChange)) {
-        chooseRandomDirection(block, now);
-      }
-      let direction = movementId === "do-move-left"
-        ? { x: -1, y: 0 }
-        : movementId === "do-move-right"
-          ? { x: 1, y: 0 }
-          : movementId === "do-move-up"
-            ? { x: 0, y: -1 }
-            : movementId === "do-move-down"
-              ? { x: 0, y: 1 }
-              : block.randomDirection;
-      let next = movementPosition(block, direction, elapsed, frame);
-      if (next.blocked && movementId === "do-move-random") {
-        const openDirections = shuffledCardinalDirections()
-          .filter(candidate => candidate.x !== direction.x || candidate.y !== direction.y)
-          .filter(candidate => !movementPosition(block, candidate, elapsed, frame).blocked);
-        if (openDirections.length) {
-          direction = openDirections[0];
-          block.randomDirection = direction;
-          block.nextDirectionChange = now + 1000 + Math.random() * 1400;
-          next = movementPosition(block, direction, elapsed, frame);
-        }
-      }
-      const { x: nextX, y: nextY, blocked } = next;
-      if (blocked) {
-        if (!block.movementBlocked) {
-          block.movementBlocked = true;
-          const obstruction = movementId === "do-move-random"
-            ? "blocked in every direction by another clod or the clearing edge"
-            : "blocked by another clod or the clearing edge";
-          setStatus(`${faceLabel(block.contents)} keeps attempting, but this clay is ${obstruction}.`);
-        }
-        continue;
-      }
-      if (block.movementBlocked) {
-        block.movementBlocked = false;
-        setStatus(`${faceLabel(block.contents)} is moving again.`);
-      }
-      block.x = nextX;
-      block.y = nextY;
-      moved = true;
-    }
-    const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches === true;
-    const shouldPulse = sensors.some(({ block }) => block.senseActive) && !reducedMotion;
-    if (moved || handChanged || sightChanged || shouldPulse) drawMap();
-  }
-
-  function chooseRandomDirection(block, now) {
-    const directions = shuffledCardinalDirections();
-    block.randomDirection = directions[Math.floor(Math.random() * directions.length)];
-    block.nextDirectionChange = now + 1000 + Math.random() * 1400;
-  }
-
-  function grabAdjacentClay(golem, requestedSide) {
-    const hands = golem.heldItems || (golem.heldItems = { left: null, right: null });
-    const availableSides = ["left", "right"].filter(side => !hands[side]);
-    if (requestedSide && !availableSides.includes(requestedSide)) {
-      setStatus(`The ${requestedSide} hand is full; it cannot grab another clod.`);
-      return false;
-    }
-    const cell = state.layout.cell + 1;
-    const centerX = golem.x + state.layout.size / 2;
-    const centerY = golem.y + state.layout.size / 2;
-    const candidates = state.blocks.filter(other => {
-      // Pointer-held pieces belong to the player's current gesture. Do not
-      // let an autonomous grab pull a dragged clod or golem away from them.
-      if (other.id === golem.id || other.unplaced || state.drag?.block.id === other.id) return false;
-      const dx = other.x + state.layout.size / 2 - centerX;
-      const dy = other.y + state.layout.size / 2 - centerY;
-      return (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) && Math.abs(dx) <= cell && Math.abs(dy) <= cell;
-    }).map(other => {
-      const dx = other.x + state.layout.size / 2 - centerX;
-      const dy = other.y + state.layout.size / 2 - centerY;
-      return { other, dx, dy, distance: dx * dx + dy * dy };
-    }).filter(candidate => requestedSide
-      ? (requestedSide === "left" ? candidate.dx < -0.5 : candidate.dx > 0.5)
-      : true)
-      .sort((a, b) => a.distance - b.distance);
-
-    const candidate = candidates.find(item => {
-      if (Math.abs(item.dx) > 0.5) {
-        const side = item.dx < 0 ? "left" : "right";
-        return !hands[side] && (!requestedSide || requestedSide === side);
-      }
-      return !requestedSide && availableSides.length > 0;
-    });
-    if (!candidate) {
-      setStatus(requestedSide
-        ? `There is no adjacent clay on the ${requestedSide}, or that hand is full.`
-        : availableSides.length ? "There is no adjacent clay that can be grabbed." : "Both hands are full; no more clay can be grabbed.");
-      return false;
-    }
-    let side = Math.abs(candidate.dx) > 0.5 ? (candidate.dx < 0 ? "left" : "right") : null;
-    if (!side) side = availableSides[Math.floor(Math.random() * availableSides.length)];
-    if (requestedSide && side !== requestedSide) return false;
-    hands[side] = candidate.other;
-    state.blocks = state.blocks.filter(other => other.id !== candidate.other.id);
-    if (state.selectedId === candidate.other.id) state.selectedId = null;
-    if (state.focusedId === candidate.other.id) state.focusedId = null;
-    if (state.targetId === candidate.other.id) state.targetId = null;
-    if (state.selectedId === golem.id) renderDetail();
-    setStatus(`${faceLabel(golem.contents)} grabbed ${faceLabel(candidate.other.contents)} into its ${side} hand.`);
-    return true;
-  }
-
-  function dropHeldClay(golem, requestedSide) {
-    const hands = golem.heldItems || (golem.heldItems = { left: null, right: null });
-    const holding = ["left", "right"].filter(side => hands[side]);
-    const side = requestedSide || holding[Math.floor(Math.random() * holding.length)];
-    if (!side || !hands[side]) {
-      setStatus(requestedSide ? `The ${requestedSide} hand is empty.` : "There is no held clay to drop.");
-      return false;
-    }
-    const heldClod = hands[side];
-    const contents = heldClod.contents;
-    const block = {
-      ...heldClod,
-      id: `held-drop-${++state.paletteCopyCount}`,
-      heldItems: { left: heldClod.heldItems?.left || null, right: heldClod.heldItems?.right || null }
-    };
-    block.x = golem.x + (side === "left" ? -state.layout.size : state.layout.size);
-    block.y = golem.y;
-    state.blocks.push(block);
-    if (!dropInClearing(block, block.x, block.y)) {
-      state.blocks = state.blocks.filter(other => other.id !== block.id);
-      setStatus("There is no open space in the clearing to drop the held clay.");
-      return false;
-    }
-    hands[side] = null;
-    if (state.selectedId === golem.id) renderDetail();
-    setStatus(`${faceLabel(golem.contents)} dropped ${faceLabel(contents)} from its ${side} hand.`);
-    return true;
-  }
-
-  function shuffledCardinalDirections() {
-    return shuffle([{ x: 1, y: 0 }, { x: -1, y: 0 }, { x: 0, y: 1 }, { x: 0, y: -1 }]);
-  }
-
-  function movementPosition(block, direction, elapsed, frame) {
-    const nextX = Math.max(0, Math.min(state.layout.width - state.layout.size, block.x + direction.x * movementSpeed * elapsed));
-    const nextY = Math.max(0, Math.min(state.layout.height - state.layout.size, block.y + direction.y * movementSpeed * elapsed));
-    const blocked = (nextX === block.x && nextY === block.y) ||
-      !isSafeCell(nextX, nextY, state.layout.size, frame) ||
-      overlapsAnotherBlock(block, nextX, nextY);
-    return { x: nextX, y: nextY, blocked };
-  }
-
-  function startActiveMovement() {
-    if (movementTimer || !state.blocks.some(hasActivePrototypeBehavior)) return;
-    lastMovementTime = performance.now();
-    movementTimer = window.setInterval(tickActiveMovement, 50);
-  }
-
-  function stopActiveMovement() {
-    if (movementTimer) window.clearInterval(movementTimer);
-    movementTimer = null;
-    lastMovementTime = null;
-  }
-
-  function resumeActiveMovementAfterDrag(block) {
-    if (block) block.movementBlocked = false;
-    if (movementTimer) window.clearInterval(movementTimer);
-    movementTimer = null;
-    lastMovementTime = null;
-    startActiveMovement();
-  }
-
-  function selectBlock(block) {
-    if (state.selectedId === block.id) {
-      state.selectedId = null;
-      renderDetail();
-      drawMap();
-      setStatus("Selection cleared.");
-      return;
-    }
-    state.selectedId = block.id;
-    state.focusedId = block.id;
-    renderDetail();
-    drawMap();
-    setStatus(`${faceLabel(block.contents)} selected. Drag it onto another clod to combine.`);
-  }
-
-  function combine(target, dropped) {
-    if (target.id === dropped.id) return;
-    const result = resultExpression(target.contents, dropped.contents);
-    if (!result) {
-      state.selectedId = null;
-      renderDetail();
-      drawMap();
-      const reason = repeatsOperatorWord(target.contents, dropped.contents)
-        ? "An operator cannot be added again to an expression that already contains it. Both clods stay in place."
-        : `No confirmed combination for ${faceLabel(target.contents)} + ${faceLabel(dropped.contents)}. Both clods stay in place.`;
-      setStatus(reason);
-      return false;
-    }
-
-    const targetLabel = faceLabel(target.contents);
-    const droppedLabel = faceLabel(dropped.contents);
-    target.contents = result;
-    state.blocks = state.blocks.filter(block => block.id !== dropped.id);
-    state.selectedId = target.id;
-    state.focusedId = target.id;
-    renderDetail();
-    drawMap();
-    const movementId = describe(target.contents).id;
-    if (["do-move-left", "do-move-right", "do-move-up", "do-move-down", "do-move-random"].includes(movementId)) {
-      const movementNote = movementId === "do-move-random"
-        ? "This tentative prototype guess wanders slowly in random directions; the game rule is not settled."
-        : `This provisional action keeps trying to move slowly ${movementId.slice("do-move-".length)}; the movement rule remains open.`;
-      setStatus(`${targetLabel} + ${droppedLabel} â†’ ${faceLabel(target.contents)}. ${movementNote}`);
-      startActiveMovement();
-    } else if (activeSenseIds.includes(movementId)) {
-      const range = describe(target.contents).sightRangeCells || 3;
-      const sense = describe(target.contents);
-      const senseKind = sense.senseKind || (movementId === "while-hand" ? "touch" : "see");
-      const positiveCondition = senseConditionDescription(sense);
-      const condition = sense.negated ? `no ${positiveCondition}` : positiveCondition;
-      setStatus(`${targetLabel} + ${droppedLabel} â†’ ${faceLabel(target.contents)}. It senses when ${condition} and glows while the condition is true.`);
-      startActiveMovement();
-    } else if (["golem-pair", "compound-golem"].includes(movementId) && describe(target.contents).behaviorImplemented) {
-      const meaning = describe(target.contents);
-      const pathwayCount = pathwaysForMeaning(meaning).length;
-      setStatus(`${targetLabel} + ${droppedLabel} â†’ ${faceLabel(target.contents)}. Each of its ${pathwayCount} conditional pathways runs when its own sense is true.`);
-      startActiveMovement();
-    } else {
-      setStatus(`${targetLabel} + ${droppedLabel} â†’ ${faceLabel(target.contents)}. ${describe(target.contents).certainty === "provisional" ? "This proposed expression has no active game behavior yet." : "The two clods have merged into one."}`);
-    }
-    return true;
-  }
-
-  canvas.addEventListener("pointerdown", event => {
-    const point = canvasPoint(event);
-    const hud = gameHudLayout();
-    if (!event.isPrimary || (event.pointerType === "mouse" && event.button !== 0)) return;
-
-    // Hit-test the clay first because it is painted above the HUD.
-    const block = hitTest(point);
-    if (block) {
-      event.preventDefault();
-      state.focusedId = block.id;
-      state.drag = {
-        block,
-        startX: block.x,
-        startY: block.y,
-        offsetX: point.x - block.x,
-        offsetY: point.y - block.y,
-        pointerId: event.pointerId,
-        lastClientX: event.clientX,
-        lastClientY: event.clientY,
-        moved: false
-      };
-      canvas.setPointerCapture(event.pointerId);
-      drawMap();
-      return;
-    }
-
-    const token = hud.tokens.find(candidate => pointInsideRect(point.x, point.y, candidate));
-    if (token) {
-      event.preventDefault();
-      palettePointerDrag = {
-        word: token.word,
-        pointerId: event.pointerId,
-        startClientX: event.clientX,
-        startClientY: event.clientY,
-        offsetX: point.x - token.left,
-        offsetY: point.y - token.top,
-        point,
-        moved: false,
-        dropTarget: null
-      };
-      canvas.setPointerCapture(event.pointerId);
-      return;
-    }
-  });
-
-  function moveWorldPointerDrag(event) {
-    if (!state.drag || state.drag.pointerId !== event.pointerId) return;
-    state.drag.lastClientX = event.clientX;
-    state.drag.lastClientY = event.clientY;
-    const point = canvasPoint(event);
-    const drag = state.drag;
-    if (!drag.moved && Math.hypot(point.x - (drag.startX + drag.offsetX), point.y - (drag.startY + drag.offsetY)) < 7) return;
-    drag.moved = true;
-    const overTopPanel = pointInsideRect(point.x, point.y, gameHudLayout().bounds);
-    if (drag.overTopPanel !== overTopPanel) {
-      drag.overTopPanel = overTopPanel;
-      setStatus(overTopPanel
-        ? "Release anywhere in the top panel to discard this clay clod."
-        : "Drop in the garden to place this clod, or onto another clod to combine.");
-    }
-    drag.block.x = Math.max(0, Math.min(state.layout.width - state.layout.size, point.x - drag.offsetX));
-    drag.block.y = Math.max(0, Math.min(state.layout.height - state.layout.size, point.y - drag.offsetY));
-    state.targetId = hitTest(point, drag.block.id)?.id || null;
-    drawMap();
-  }
-
-  function finishWorldPointerDrag(event) {
-    if (!state.drag || state.drag.pointerId !== event.pointerId) return;
-    const drag = state.drag;
-    drag.lastClientX = event.clientX;
-    drag.lastClientY = event.clientY;
-    const point = canvasPoint(event);
-    const target = hitTest(point, drag.block.id);
-    const droppedInTopPanel = drag.moved && pointerIsOverTopPanel(event.clientX, event.clientY);
-    state.drag = null;
-    state.targetId = null;
-    if (!drag.moved) {
-      selectBlock(drag.block);
-      resumeActiveMovementAfterDrag(drag.block);
-      return;
-    }
-    if (droppedInTopPanel) {
-      discardBlock(drag.block);
-      return;
-    }
-    if (target && combine(target, drag.block)) {
-      resumeActiveMovementAfterDrag(target);
-      return;
-    }
-    if (dropInClearing(drag.block, drag.block.x, drag.block.y)) {
-      state.selectedId = drag.block.id;
-      state.focusedId = drag.block.id;
-      renderDetail();
-      drawMap();
-      setStatus(target
-        ? "Those clods do not combine; the dragged clay was placed in the clearing."
-        : "Clay placed in the clearing.");
-      resumeActiveMovementAfterDrag(drag.block);
-      return;
-    }
-    drag.block.x = drag.startX;
-    drag.block.y = drag.startY;
-    drawMap();
-    setStatus("The clearing is full; there is no open space for that clay.");
-    resumeActiveMovementAfterDrag(drag.block);
-  }
-
-  function cancelWorldPointerDrag(event) {
-    if (!state.drag) return;
-    if (event.pointerId !== undefined && state.drag.pointerId !== event.pointerId) return;
-    const drag = state.drag;
-    const clientX = Number.isFinite(event.clientX) ? event.clientX : drag.lastClientX;
-    const clientY = Number.isFinite(event.clientY) ? event.clientY : drag.lastClientY;
-    state.drag = null;
-    state.targetId = null;
-    if (drag.moved && pointerIsOverTopPanel(clientX, clientY)) {
-      discardBlock(drag.block);
-      return;
-    }
-    drag.block.x = drag.startX;
-    drag.block.y = drag.startY;
-    drawMap();
-    resumeActiveMovementAfterDrag(state.blocks.find(block => hasActivePrototypeBehavior(block)));
-  }
-
-  window.addEventListener("pointermove", moveWorldPointerDrag, { passive: false });
-  window.addEventListener("pointerup", finishWorldPointerDrag);
-  window.addEventListener("pointercancel", cancelWorldPointerDrag);
-  canvas.addEventListener("lostpointercapture", cancelWorldPointerDrag);
-
-  canvas.addEventListener("keydown", event => {
-    if (!state.blocks.length) return;
-    const index = Math.max(0, state.blocks.findIndex(block => block.id === state.focusedId));
-    if (["ArrowRight", "ArrowDown", "ArrowLeft", "ArrowUp"].includes(event.key)) {
-      event.preventDefault();
-      const step = event.key === "ArrowRight" || event.key === "ArrowDown" ? 1 : -1;
-      const next = state.blocks[(index + step + state.blocks.length) % state.blocks.length];
-      state.focusedId = next.id;
-      drawMap();
-    } else if (event.key === "Enter" || event.key === " ") {
-      event.preventDefault();
-      const focused = state.blocks.find(block => block.id === state.focusedId) || state.blocks[0];
-      selectBlock(focused);
-    } else if (event.key === "Escape") {
-      state.selectedId = null;
-      renderDetail();
-      drawMap();
-    }
-  });
-
-  window.addEventListener("resize", resizeMap);
-  if (document.fonts?.ready) document.fonts.ready.then(() => drawMap());
-  shuffle(state.blocks);
-  renderElementBank();
-  resizeMap();
-  renderDetail();
-})();
+¨¥yÛhr·šµë-­æ¦}Ó©z¶­Š‰ç¢Ú^®h­µçEj)^vÚ­æ­zËky©Ÿtê^­«b¢yè¶—«š+myÑZŠW¶‡+y«^²ÚŞjgİ:—«jØ¨z-¥êæŠÛ^t  ¤€ôøì(€€‰ÕÍ”ÍÑÉ¥Ğˆì((€½¹ÍĞ…¹Ù…Ì€ô‘½Õµ•¹Ğ¹ÅÕ•ÉåM•±•Ñ½È ˆµ…Àµ…¹Ù…Ìˆ¤ì(€½¹ÍĞ½¹Ñ•áĞ€ô…¹Ù…Ì¹•Ñ½¹Ñ•áĞ ˆÉˆ¤ì(€½¹ÍĞµ…Á	½…É€ô‘½Õµ•¹Ğ¹ÅÕ•ÉåM•±•Ñ½È ˆ¹µ…Àµ‰½…Éˆ¤ì(€½¹ÍĞ•±•µ•¹Ñ	…¹¬€ô‘½Õµ•¹Ğ¹ÅÕ•ÉåM•±•Ñ½È ˆ•±•µ•¹Ğµ‰…¹¬ˆ¤ì(€½¹ÍĞ‘•Ñ…¥°€ô‘½Õµ•¹Ğ¹ÅÕ•ÉåM•±•Ñ½È ˆ‘•Ñ…¥°µ½¹Ñ•¹Ğˆ¤ì(€½¹ÍĞÍÑ…ÑÕÌ€ô‘½Õµ•¹Ğ¹ÅÕ•ÉåM•±•Ñ½È ˆÍÑ…ÑÕÌˆ¤ì(€½¹ÍĞİ½É±‘%µ…”€ô¹•Ü%µ…” ¤ì(€İ½É±‘%µ…”¹ÍÉŒ€ô€‰…ÍÍ•ÑÌ½½±•´µİ½É±µµÕ‘‘äµµ…¹àµ™¥•±¹Á¹œˆì(€İ½É±‘%µ…”¹…‘‘Ù•¹Ñ1¥ÍÑ•¹•È ‰±½…ˆ°€ ¤€ôø‘É…İ5…À ¤¤ì(€½¹ÍĞ±…å%µ…”€ô¹•Ü%µ…” ¤ì(€±…å%µ…”¹ÍÉŒ€ô€‰…ÍÍ•ÑÌ½½±•´µ±…äµ±ÕµÀµ¥¹¬µ½ÕÑ±¥¹”´ÈÔÙÁà¹Á¹œˆì(€±…å%µ…”¹…‘‘Ù•¹Ñ1¥ÍÑ•¹•È ‰±½…ˆ°€ ¤€ôøì(€€€€¼¼Q¥¹ĞÉ•ÅÕ•ÍÑÌ…¸¡…ÁÁ•¸‰•™½É”Ñ¡¥Ì¥µ…”±½…‘Ì°•ÍÁ•¥…±±äİ¡¥±”Ñ¡”(€€€€¼¼¥¹¥Ñ¥…°Á…±•ÑÑ”¥Ì‰•¥¹œ‰Õ¥±Ğ¸¥Í…ÉÑ¡½Í”ÑÉ…¹ÍÁ…É•¹ĞÁ±…•¡½±‘•ÉÌ¸(€€€±…åQ¥¹Ñ…¡”¹±•…È ¤ì(€€€‘É…İ5…À ¤ì(€€€É•¹‘•É±•µ•¹Ñ	…¹¬ ¤ì(€ô¤ì(€½¹ÍĞ±½‘%µ…”€ô¹•Ü%µ…” ¤ì(€±½‘%µ…”¹ÍÉŒ€ô€‰…ÍÍ•ÑÌ½½±•´µ±…äµÕ‰”µ‰±½¬´ÈÔÙÁà¹Á¹œˆì(€±½‘%µ…”¹…‘‘Ù•¹Ñ1¥ÍÑ•¹•È ‰±½…ˆ°€ ¤€ôøì(€€€±½‘Q¥¹Ñ…¡”¹±•…È ¤ì(€€€‘É…İ5…À ¤ì(€€€É•¹‘•É±•µ•¹Ñ	…¹¬ ¤ì(€ô¤ì(€½¹ÍĞµ¥¹¥½±•µ%µ…”€ô¹•Ü%µ…” ¤ì(€µ¥¹¥½±•µ%µ…”¹ÍÉŒ€ô€‰…ÍÍ•ÑÌ½½±•´µµ¥¹¤µ½±•´µ™É½¹Ğ´ÈÔÙÁà¹Á¹œˆì(€µ¥¹¥½±•µ%µ…”¹…‘‘Ù•¹Ñ1¥ÍÑ•¹•È ‰±½…ˆ°€ ¤€ôøì(€€€µ¥¹¥½±•µQ¥¹Ñ…¡”¹±•…È ¤ì(€€€‘É…İ5…À ¤ì(€ô¤ì(€½¹ÍĞ•±•µ•¹ÑMÁÉ¥Ñ•A…Ñ¡Ì€ôì(€€€•å”è€‰…ÍÍ•ÑÌ½½±•´µ±…äµ•å”´ÈÔÙÁà¹Á¹œˆ°(€€€€‰¹½Ğµ•å”ˆè€‰…ÍÍ•ÑÌ½½±•´µ±…äµ•å”µ±½Í•´ÈÔÙÁà¹Á¹œˆ°(€€€¡…¹è€‰…ÍÍ•ÑÌ½½±•´µ±…äµ¡…¹µ±•™Ğ´ÈÔÙÁà¹Á¹œˆ°(€€€€‰±•™Ğµ¡…¹ˆè€‰…ÍÍ•ÑÌ½½±•´µ±…äµ¡…¹µ±•™Ğ´ÈÔÙÁà¹Á¹œˆ°(€€€€‰É¥¡Ğµ¡…¹ˆè€‰…ÍÍ•ÑÌ½½±•´µ±…äµ¡…¹µ±•™Ğ´ÈÔÙÁà¹Á¹œˆ°(€€€™¥ÍĞè€‰…ÍÍ•ÑÌ½½±•´µ±…äµ™¥ÍĞµ±½Í•´ÈÔÙÁà¹Á¹œˆ°(€€€€‰±•™Ğµ™¥ÍĞˆè€‰…ÍÍ•ÑÌ½½±•´µ±…äµ™¥ÍĞµ±½Í•´ÈÔÙÁà¹Á¹œˆ°(€€€€‰É¥¡Ğµ™¥ÍĞˆè€‰…ÍÍ•ÑÌ½½±•´µ±…äµ™¥ÍĞµ±½Í•´ÈÔÙÁà¹Á¹œˆ°(€€€™••Ğè€‰…ÍÍ•ÑÌ½½±•´µ±…äµ™••Ğ´ÈÔÙÁà¹Á¹œˆ°(€€€±•™Ğè€‰…ÍÍ•ÑÌ½½±•´µ±…äµ…ÉÉ½ÜµÉ¥¡Ğ´ÈÔÙÁà¹Á¹œˆ°(€€€É¥¡Ğè€‰…ÍÍ•ÑÌ½½±•´µ±…äµ…ÉÉ½ÜµÉ¥¡Ğ´ÈÔÙÁà¹Á¹œˆ°(€€€ÕÀè€‰…ÍÍ•ÑÌ½½±•´µ±…äµ…ÉÉ½ÜµÉ¥¡Ğ´ÈÔÙÁà¹Á¹œˆ°(€€€‘½İ¸è€‰…ÍÍ•ÑÌ½½±•´µ±…äµ…ÉÉ½ÜµÉ¥¡Ğ´ÈÔÙÁà¹Á¹œˆ(€ôì(€•±•µ•¹ÑMÁÉ¥Ñ•A…Ñ¡Ì¹±½€ô€‰…ÍÍ•ÑÌ½½±•´µ±…äµÕ‰”µ‰±½¬´ÈÔÙÁà¹Á¹œˆì(€½¹ÍĞ•±•µ•¹ÑQ¥¹Ñ…¡”€ô¹•Ü5…À ¤ì(€½¹ÍĞ•±•µ•¹ÑMÁÉ¥Ñ•Ì€ô=‰©•Ğ¹™É½µ¹ÑÉ¥•Ì¡=‰©•Ğ¹•¹ÑÉ¥•Ì¡•±•µ•¹ÑMÁÉ¥Ñ•A…Ñ¡Ì¤¹µ…À ¡mµ•…¹¥¹œ°Á…Ñ¡t¤€ôøì(€€€½¹ÍĞÍÁÉ¥Ñ”€ô¹•Ü%µ…” ¤ì(€€€ÍÁÉ¥Ñ”¹ÍÉŒ€ôÁ…Ñ ì(€€€ÍÁÉ¥Ñ”¹…‘‘Ù•¹Ñ1¥ÍÑ•¹•È ‰±½…ˆ°€ ¤€ôøì(€€€€€•±•µ•¹ÑQ¥¹Ñ…¡”¹±•…È ¤ì(€€€€€‘É…İ5…À ¤ì(€€€€€É•¹‘•É±•µ•¹Ñ	…¹¬ ¤ì(€€€ô¤ì(€€€É•ÑÕÉ¸mµ•…¹¥¹œ°ÍÁÉ¥Ñ•tì(€ô¤¤ì(€½¹ÍĞ±…åQ¥¹Ñ…¡”€ô¹•Ü5…À ¤ì(€½¹ÍĞ±½‘Q¥¹Ñ…¡”€ô¹•Ü5…À ¤ì(€½¹ÍĞµ¥¹¥½±•µQ¥¹Ñ…¡”€ô¹•Ü5…À ¤ì(€½¹ÍĞ±•…É¥¹A½±å½¸€ôl(€€€lÀ¸ÀÈ°€À¸ÌÑt°lÀ¸äà°€À¸ÌÑt°lÀ¸äà°€À¸äÙt°lÀ¸ÀÈ°€À¸äÙt(€tì(€½¹ÍĞ•±•µ•¹Ñ]½É‘Ì€ôl(€€€€‰Iˆ°€‰I8ˆ°€‰	1Uˆ°€‰9=Pˆ°€‰I%!Pˆ°€‰U@ˆ°€‰]!%1ˆ°€‰<ˆ°(€€€€‰!9ˆ°€‰eˆ°€‰Pˆ°€‰1=ˆ(€tì(€½¹ÍĞÁ…¥È€ô€¡±•™Ğ°É¥¡Ğ¤€ôøm±•™Ğ°É¥¡Ñt¹Í½ÉĞ ¤¹©½¥¸ ‰qÔÀÀÀÀˆ¤ì(€½¹ÍĞ…Ñ¥Ù•M•¹Í•%‘Ì€ôl(€€€€‰İ¡¥±”µ•å”ˆ°€‰İ¡¥±”µ¡…¹ˆ°€‰¹½ĞµÍ•”ˆ°€‰¹½ĞµÑ½Õ ˆ°€‰¹½Ğµ¡½±ˆ°(€€€€‰İ¡¥±”µ±•™Ğµ¡…¹ˆ°€‰İ¡¥±”µÉ¥¡Ğµ¡…¹ˆ°(€€€€‰İ¡¥±”µ™¥ÍĞˆ°€‰İ¡¥±”µ±•™Ğµ™¥ÍĞˆ°€‰İ¡¥±”µÉ¥¡Ğµ™¥ÍĞˆ°(€€€€‰İ¡¥±”µÍ¥¡Ğµ±•™Ğˆ°€‰İ¡¥±”µÍ¥¡ĞµÉ¥¡Ğˆ°€‰İ¡¥±”µÍ¥¡ĞµÕÀˆ°€‰İ¡¥±”µÍ¥¡Ğµ‘½İ¸ˆ°(€€€€¸¸¹lÄ°€È°€Ì°€Ğ°€Ô°€Ø°€İt¹µ…À¡µ…Í¬€ôøİ¡¥±”µÍ¥¡Ğ´‘ì¡ì(€€€€€€Äè€‰É•ˆ°€Èè€‰É••¸ˆ°€Ìè€‰å•±±½Üˆ°€Ğè€‰‰±Õ”ˆ°(€€€€€€Ôè€‰µ…•¹Ñ„ˆ°€Øè€‰å…¸ˆ°€Üè€‰İ¡¥Ñ”ˆ(€€€ô¥mµ…Í­uõ€¤°(€€€€‰Í¥¡Ğµ±•™Ğˆ°€‰Í¥¡ĞµÉ¥¡Ğˆ°€‰Í¥¡ĞµÕÀˆ°€‰Í¥¡Ğµ‘½İ¸ˆ°(€€€€¸¸¹lÄ°€È°€Ì°€Ğ°€Ô°€Ø°€İt¹µ…À¡µ…Í¬€ôøİ¡¥±”µÑ½Õ ´‘ì¡ì€Äè€‰É•ˆ°€Èè€‰É••¸ˆ°€Ìè€‰å•±±½Üˆ°€Ğè€‰‰±Õ”ˆ°€Ôè€‰µ…•¹Ñ„ˆ°€Øè€‰å…¸ˆ°€Üè€‰İ¡¥Ñ”ˆô¥mµ…Í­uõ€¤°(€€€€‰İ¡¥±”µÑ½Õ µ¡…¹µ±½ˆ°€‰İ¡¥±”µÑ½Õ µÉ•µ±½ˆ°€‰İ¡¥±”µÑ½Õ µÉ••¸µ±½ˆ°(€€€€‰İ¡¥±”µÑ½Õ µ‰±Õ”µ±½ˆ°€‰İ¡¥±”µÑ½Õ µå•±±½Üµ±½ˆ°€‰İ¡¥±”µÑ½Õ µµ…•¹Ñ„µ±½ˆ°(€€€€‰İ¡¥±”µÑ½Õ µå…¸µ±½ˆ°€‰İ¡¥±”µÑ½Õ µİ¡¥Ñ”µ±½ˆ(€tì(€™Õ¹Ñ¥½¸•±•µ•¹Ğ¡İ½É¤ì(€€€É•ÑÕÉ¸ìÑåÁ”è€‰•±•µ•¹Ğˆ°İ½Éôì(€ô((€™Õ¹Ñ¥½¸½µÁ½Õ¹¡±•™Ğ°É¥¡Ğ°µ•…¹¥¹œ€ô¹Õ±°¤ì(€€€É•ÑÕÉ¸ìÑåÁ”è€‰½µÁ½Õ¹ˆ°±•™Ğ°É¥¡Ğ°µ•…¹¥¹œôì(€ô((€™Õ¹Ñ¥½¸µ…­•	±½¬¡¥°½¹Ñ•¹ÑÌ¤ì(€€€É•ÑÕÉ¸ì¥°½¹Ñ•¹ÑÌ°àè€À°äè€À°¡•±‘%Ñ•µÌèì±•™Ğè¹Õ±°°É¥¡Ğè¹Õ±°ôôì(€ô((€™Õ¹Ñ¥½¸µ…­•%¹¥Ñ¥…±	±½­Ì ¤ì(€€€€¼¼Q¡”•±•µ•¹Ğ‰…¹¬¥Ì…¸•¹‘±•ÍÌÍ½ÕÉ”°Í¼ÍÑ…ÉĞİ¥Ñ ½¹”İ½É±½Áä½˜(€€€€¼¼•… ‰…Í”İ½É¥¹ÍÑ•…½˜ÁÉ”µ™¥±±¥¹œÑ¡”±•…É¥¹œİ¥Ñ ‘ÕÁ±¥…Ñ•Ì¸(€€€É•ÑÕÉ¸•±•µ•¹Ñ]½É‘Ì¹µ…À ¡İ½É°¥¹‘•à¤€ôøµ…­•	±½¬¡‰±½¬´‘í¥¹‘•áõ€°•±•µ•¹Ğ¡İ½É¤¤¤ì(€ô((€½¹ÍĞ•±•µ•¹Ñ5•…¹¥¹Ì€ôì(€€€Ièì¥è€‰É•ˆ°…Ñ•½Éäè€‰™¥±Ñ•Èˆ°±…‰•°è€‰Iˆ°É•…‘¥¹œè€‰É•Á¥µ•¹Ğˆ°½±½É5…Í¬è€Äô°(€€€I8èì¥è€‰É••¸ˆ°…Ñ•½Éäè€‰™¥±Ñ•Èˆ°±…‰•°è€‰I8ˆ°É•…‘¥¹œè€‰É••¸Á¥µ•¹Ğˆ°½±½É5…Í¬è€Èô°(€€€	1Uèì¥è€‰‰±Õ”ˆ°…Ñ•½Éäè€‰™¥±Ñ•Èˆ°±…‰•°è€‰	1Uˆ°É•…‘¥¹œè€‰‰±Õ”Á¥µ•¹Ğˆ°½±½É5…Í¬è€Ğô°(€€€1=èì¥è€‰±½ˆ°…Ñ•½Éäè€‰±½µ­¥¹ˆ°±…‰•°è€‰1=ˆ°É•…‘¥¹œè€‰„±…ä±½ˆô°(€€€I%!Pèì¥è€‰É¥¡Ğˆ°…Ñ•½Éäè€‰™¥±Ñ•Èˆ°±…‰•°è€‰I%!Pˆ°É•…‘¥¹œè€‰Ñ¡”É¥¡Ğ‘¥É•Ñ¥½¸ˆô°(€€€U@èì¥è€‰ÕÀˆ°…Ñ•½Éäè€‰™¥±Ñ•Èˆ°±…‰•°è€‰U@ˆ°É•…‘¥¹œè€‰Ñ¡”ÕÁİ…É‘¥É•Ñ¥½¸ˆô°(€€€!9èì¥è€‰¡…¹ˆ°…Ñ•½Éäè€‰Í•¹Í”µÍ½ÕÉ”ˆ°±…‰•°è€‰!9ˆ°É•…‘¥¹œè€‰Ñ½Õ ˆ°Í•¹Í•Q•áĞè€‰Ñ½Õ ˆô°(€€€eèì¥è€‰•å”ˆ°…Ñ•½Éäè€‰Í•¹Í”µÍ½ÕÉ”ˆ°±…‰•°è€‰eˆ°É•…‘¥¹œè€‰…¸•å”ˆ°Í•¹Í•Q•áĞè€‰Í••¥¹œˆô°(€€€Pèì¥è€‰™••Ğˆ°…Ñ•½Éäè€‰…Ñ¥½¸µÁ…ÉĞˆ°±…‰•°è€‰Pˆ°É•…‘¥¹œè€‰™••ĞÕÍ•™½Èµ½Ù•µ•¹Ğˆô°(€€€<èì¥è€‰‘¼ˆ°…Ñ•½Éäè€‰½Á•É…Ñ½Èˆ°±…‰•°è€‰<ˆô°(€€€]!%1èì¥è€‰İ¡¥±”ˆ°…Ñ•½Éäè€‰½Á•É…Ñ½Èˆ°±…‰•°è€‰]!%1ˆô°(€€€9èì¥è€‰…¹ˆ°…Ñ•½Éäè€‰½Á•É…Ñ½Èˆ°±…‰•°è€‰9ˆô°(€€€=Hèì¥è€‰½Èˆ°…Ñ•½Éäè€‰½Á•É…Ñ½Èˆ°±…‰•°è€‰=Hˆô°(€€€9=Pèì¥è€‰¹½Ğˆ°…Ñ•½Éäè€‰½Á•É…Ñ½Èˆ°±…‰•°è€‰9=Pˆô°(€€€%8èì¥è€‰¥¸ˆ°…Ñ•½Éäè€‰½Á•É…Ñ½Èˆ°±…‰•°è€‰%8ˆô°(€€€5èì¥è€‰µ”ˆ°…Ñ•½Éäè€‰½Á•É…Ñ½Èˆ°±…‰•°è€‰5ˆô°(€€€%Pèì¥è€‰™¥Ğˆ°…Ñ•½Éäè€‰Í•¹Í”µÍ½ÕÉ”ˆ°±…‰•°è€‰%Pˆ°É•…‘¥¹œè€‰Ñ¡”¡•±Á¥••Ì™¥Ğˆ°Í•¹Í•Q•áĞè€‰¡•±Á¥••Ì™¥ÑÑ¥¹œ¥¹Ñ¼„ÍÑÉÕÑÕÉ”ˆô(€ôì((€™Õ¹Ñ¥½¸‘•ÍÉ¥‰”¡•áÁÉ•ÍÍ¥½¸¤ì(€€€¥˜€¡•áÁÉ•ÍÍ¥½¸¹ÑåÁ”€ôôô€‰•±•µ•¹Ğˆ¤ì(€€€€€É•ÑÕÉ¸ì€¸¸¸¡•±•µ•¹Ñ5•…¹¥¹Ím•áÁÉ•ÍÍ¥½¸¹İ½É‘tñğíô¤°•ÉÑ…¥¹Ñäè€‰•±•µ•¹Ğˆôì(€€€ô(€€€¥˜€¡•áÁÉ•ÍÍ¥½¸¹µ•…¹¥¹œ¤É•ÑÕÉ¸•áÁÉ•ÍÍ¥½¸¹µ•…¹¥¹œì(€€€É•ÑÕÉ¸ì(€€€€€¥è€‰Õ¹É•Í½±Ù•ˆ°(€€€€€…Ñ•½Éäè€‰Õ¹É•Í½±Ù•ˆ°(€€€€€±…‰•°è€‘í™…•1…‰•°¡•áÁÉ•ÍÍ¥½¸¹±•™Ğ¥ô€¬€‘í™…•1…‰•°¡•áÁÉ•ÍÍ¥½¸¹É¥¡Ğ¥õ€°(€€€€€É•…‘¥¹œè€‰9¼É•…‘¥¹œ¡…Ì‰••¸…É••™½ÈÑ¡¥Ì•áÁÉ•ÍÍ¥½¸¸ˆ°(€€€€€•ÉÑ…¥¹Ñäè€‰Õ¹É•Í½±Ù•ˆ(€€€ôì(€ô((€½¹ÍĞµ¥á•‘½±½ÉÌ€ôì(€€€€Ìèì¥è€‰å•±±½Üˆ°±…‰•°è€‰e11=\ˆ°É•…‘¥¹œè€‰å•±±½Ü™É½´É•…¹É••¸½±½È¡…¹¹•±Ìˆô°(€€€€Ôèì¥è€‰µ…•¹Ñ„ˆ°±…‰•°è€‰59Qˆ°É•…‘¥¹œè€‰µ…•¹Ñ„™É½´É•…¹‰±Õ”½±½È¡…¹¹•±Ìˆô°(€€€€Øèì¥è€‰å…¸ˆ°±…‰•°è€‰e8ˆ°É•…‘¥¹œè€‰å…¸™É½´É••¸…¹‰±Õ”½±½È¡…¹¹•±Ìˆô°(€€€€Üèì¥è€‰İ¡¥Ñ”ˆ°±…‰•°è€‰]!%Qˆ°É•…‘¥¹œè€‰İ¡¥Ñ”™É½´É•°É••¸°…¹‰±Õ”½±½È¡…¹¹•±Ìˆô(€ôì((€™Õ¹Ñ¥½¸™…•1…‰•°¡•áÁÉ•ÍÍ¥½¸¤ì(€€€¥˜€¡•áÁÉ•ÍÍ¥½¸¹ÑåÁ”€ôôô€‰•±•µ•¹Ğˆ¤É•ÑÕÉ¸€¡•±•µ•¹Ñ5•…¹¥¹Ím•áÁÉ•ÍÍ¥½¸¹İ½É‘tü¹±…‰•°ñğ•áÁÉ•ÍÍ¥½¸¹İ½É¤¹Ñ½1½İ•É…Í” ¤ì(€€€É•ÑÕÉ¸‘•ÍÉ¥‰”¡•áÁÉ•ÍÍ¥½¸¤¹±…‰•°¹Ñ½1½İ•É…Í” ¤ì(€ô((€™Õ¹Ñ¥½¸½¹ÍÑÉÕÑ¥½¸¡•áÁÉ•ÍÍ¥½¸¤ì(€€€¥˜€¡•áÁÉ•ÍÍ¥½¸¹ÑåÁ”€ôôô€‰•±•µ•¹Ğˆ¤É•ÑÕÉ¸•áÁÉ•ÍÍ¥½¸¹İ½É¹Ñ½1½İ•É…Í” ¤ì(€€€É•ÑÕÉ¸€ ‘í½¹ÍÑÉÕÑ¥½¸¡•áÁÉ•ÍÍ¥½¸¹±•™Ğ¥ô€¬€‘í½¹ÍÑÉÕÑ¥½¸¡•áÁÉ•ÍÍ¥½¸¹É¥¡Ğ¥ô¥€ì(€ô((€™Õ¹Ñ¥½¸ÁÉ½Ù¥Í¥½¹…±5•…¹¥¹œ¡¥°…Ñ•½Éä°±…‰•°°É•…‘¥¹œ°•áÑÉ„€ôíô¤ì(€€€É•ÑÕÉ¸ì¥°…Ñ•½Éä°±…‰•°°É•…‘¥¹œ°•ÉÑ…¥¹Ñäè€‰ÁÉ½Ù¥Í¥½¹…°ˆ°€¸¸¹•áÑÉ„ôì(€ô((€™Õ¹Ñ¥½¸±¥Ñ•É…±±½‘5•…¹¥¹œ¡½¹Ñ•¹ÑÌ¤ì(€€€½¹ÍĞ½¹Ñ•¹Ñ½±½È€ô½¹Ñ•¹ÑÌ¹½±½É%¹Ñ•¹Ñ5…Í¬€üü½¹Ñ•¹ÑÌ¹½±½É5…Í¬ì(€€€½¹ÍĞ¥Í½±½É•€ô9Õµ‰•È¹¥Í%¹Ñ••È¡½¹Ñ•¹Ñ½±½È¤ì(€€€½¹ÍĞ¥Í!…¹€ô½¹Ñ•¹ÑÌ¹¥€ôôô€‰¡…¹ˆì(€€€½¹ÍĞ¥Í±½‘=™±½€ô½¹Ñ•¹ÑÌ¹¥€ôôô€‰±½ˆñğ½¹Ñ•¹ÑÌ¹±½‘1¥Ñ•É…°ì(€€€½¹ÍĞ½¹Ñ•¹Ñ1…‰•°€ô½¹Ñ•¹ÑÌ¹¥€ôôô€‰±½ˆ(€€€€€€ü€‰1=ˆ(€€€€€€è½¹Ñ•¹ÑÌ¹±…‰•°ñğ€‰±…äˆì(€€€½¹ÍĞ±…‰•°€ô¥Í±½‘=™±½€ü1==€‘í½¹Ñ•¹Ñ1…‰•±õ€€è€‘í½¹Ñ•¹Ñ1…‰•±ô1=€ì(€€€½¹ÍĞÉ•…‘¥¹œ€ô¥Í!…¹(€€€€€€ü€‰„¡…¹±½ˆ(€€€€€€è¥Í½±½É•(€€€€€€€€ü„€‘í½¹Ñ•¹ÑÌ¹±…‰•°¹Ñ½1½İ•É…Í” ¥ô±½‘€(€€€€€€€€è„±…ä±½•µ‰½‘å¥¹œ€‘í½¹Ñ•¹ÑÌ¹É•…‘¥¹œñğ½¹Ñ•¹Ñ1…‰•°¹Ñ½1½İ•É…Í” ¥õ€ì(€€€É•ÑÕÉ¸ÁÉ½Ù¥Í¥½¹…±5•…¹¥¹œ (€€€€€¥Í!…¹€ü€‰¡…¹µ±½ˆ€è¥Í½±½É•€ü€‘í½¹Ñ•¹ÑÌ¹¥‘ôµ±½‘€€è±½µ½˜´‘í½¹Ñ•¹ÑÌ¹¥‘õ€°(€€€€€€‰½‰©•Ğµ™¥±Ñ•Èˆ°(€€€€€±…‰•°°(€€€€€É•…‘¥¹œ°(€€€€€ì(€€€€€€€½‰©•Ñ-¥¹è€‰±½ˆ°(€€€€€€€±½‘1¥Ñ•É…°èÑÉÕ”°(€€€€€€€€¸¸¸¡¥Í!…¹€üìÑ½Õ¡=‰©•Ñ-¥¹è€‰¡…¹ˆô€èíô¤°(€€€€€€€€¸¸¸¡¥Í½±½É•€üì½±½É5…Í¬è½¹Ñ•¹Ñ½±½Èô€èíô¤(€€€€€ô(€€€€¤ì(€ô((€™Õ¹Ñ¥½¸½µ‰¥¹•5•…¹¥¹œ¡±•™Ğ°É¥¡Ğ°±•™ÑáÁÉ•ÍÍ¥½¸°É¥¡ÑáÁÉ•ÍÍ¥½¸¤ì(€€€½¹ÍĞ¥‘Ì€ôÁ…¥È¡±•™Ğ¹¥°É¥¡Ğ¹¥¤ì(€€€¥˜€¡9Õµ‰•È¹¥Í%¹Ñ••È¡±•™Ğ¹½±½É5…Í¬¤€˜˜9Õµ‰•È¹¥Í%¹Ñ••È¡É¥¡Ğ¹½±½É5…Í¬¤¤ì(€€€€€½¹ÍĞ½±½É5…Í¬€ô±•™Ğ¹½±½É5…Í¬ğÉ¥¡Ğ¹½±½É5…Í¬ì(€€€€€¥˜€¡½±½É5…Í¬€ôôô±•™Ğ¹½±½É5…Í¬€˜˜½±½É5…Í¬€ôôôÉ¥¡Ğ¹½±½É5…Í¬¤É•ÑÕÉ¸¹Õ±°ì(€€€€€½¹ÍĞµ¥á•€ôµ¥á•‘½±½ÉÍm½±½É5…Í­tì(€€€€€¥˜€¡µ¥á•¤É•ÑÕÉ¸ÁÉ½Ù¥Í¥½¹…±5•…¹¥¹œ¡µ¥á•¹¥°€‰½±½ÈµÍÑ…Ñ”ˆ°µ¥á•¹±…‰•°°µ¥á•¹É•…‘¥¹œ°ì½±½É5…Í¬ô¤ì(€€€ô(€€€¥˜€¡±•™Ğ¹¥€ôôô€‰±½ˆ¤É•ÑÕÉ¸±¥Ñ•É…±±½‘5•…¹¥¹œ¡É¥¡Ğ¤ì(€€€¥˜€¡É¥¡Ğ¹¥€ôôô€‰±½ˆ¤É•ÑÕÉ¸±¥Ñ•É…±±½‘5•…¹¥¹œ¡±•™Ğ¤ì(€€€¥˜€¡¥‘Ì€ôôôÁ…¥È ‰‘¼ˆ°€‰™••Ğˆ¤¤ì(€€€€€É•ÑÕÉ¸ÁÉ½Ù¥Í¥½¹…±5•…¹¥¹œ (€€€€€€€€‰‘¼µµ½Ù”µÉ…¹‘½´ˆ°€‰µ½Ñ¥Ù”ˆ°€‰5=Yˆ°(€€€€€€€€‰µ½Ù”Í±½İ±ä¥¸„É…¹‘½´…É‘¥¹…°‘¥É•Ñ¥½¸°¡…¹¥¹œ‘¥É•Ñ¥½¸½…Í¥½¹…±±äìÑ•¹Ñ…Ñ¥Ù”ÁÉ½Ñ½ÑåÁ”¥¹Ñ•ÉÁÉ•Ñ…Ñ¥½¸ˆ(€€€€€€¤ì(€€€ô(€€€½¹ÍĞµ½Ù•µ•¹Ñ¥É•Ñ¥½¸€ôl‰±•™Ğˆ°€‰É¥¡Ğˆ°€‰ÕÀˆ°€‰‘½İ¸‰t¹™¥¹¡‘¥É•Ñ¥½¸€ôø(€€€€€¥‘Ì€ôôôÁ…¥È ‰‘¼µµ½Ù”µÉ…¹‘½´ˆ°‘¥É•Ñ¥½¸¤(€€€€¤ì(€€€¥˜€¡µ½Ù•µ•¹Ñ¥É•Ñ¥½¸¤ì(€€€€€½¹ÍĞ‘¥É•Ñ¥½¹]½É‘Ì€ôì±•™Ğè€‰±•™Ğˆ°É¥¡Ğè€‰É¥¡Ğˆ°ÕÀè€‰ÕÀˆ°‘½İ¸è€‰‘½İ¸ˆôì(€€€€€É•ÑÕÉ¸ÁÉ½Ù¥Í¥½¹…±5•…¹¥¹œ (€€€€€€€‘¼µµ½Ù”´‘íµ½Ù•µ•¹Ñ¥É•Ñ¥½¹õ€°€‰µ½Ñ¥Ù”ˆ°5=Y€‘íµ½Ù•µ•¹Ñ¥É•Ñ¥½¸¹Ñ½UÁÁ•É…Í” ¥õ€°(€€€€€€€µ½Ù”Í±½İ±ä€‘í‘¥É•Ñ¥½¹]½É‘Ímµ½Ù•µ•¹Ñ¥É•Ñ¥½¹uôì‘¥É•Ñ¥½¹…°ÁÉ½Ñ½ÑåÁ”‰•¡…Ù¥½É€(€€€€€€¤ì(€€€ô(€€€½¹ÍĞ‘¥É•Ñ¥½¹…±Ñ¥½¸€ôm±•™Ğ°É¥¡Ñt¹™¥¹¡Á…ÉĞ€ôø(€€€€€Á…ÉĞ¹…Ñ•½Éä€ôôô€‰µ½Ñ¥Ù”ˆ€˜˜l‰É…ˆˆ°€‰‘É½À‰t¹¥¹±Õ‘•Ì¡Á…ÉĞ¹…Ñ¥½¹QåÁ”¤(€€€€¤ì(€€€½¹ÍĞ…Ñ¥½¹¥É•Ñ¥½¸€ôm±•™Ğ°É¥¡Ñt¹™¥¹¡Á…ÉĞ€ôøl‰±•™Ğˆ°€‰É¥¡Ğ‰t¹¥¹±Õ‘•Ì¡Á…ÉĞ¹¥¤¤ì(€€€¥˜€¡‘¥É•Ñ¥½¹…±Ñ¥½¸€˜˜…Ñ¥½¹¥É•Ñ¥½¸€˜˜€…‘¥É•Ñ¥½¹…±Ñ¥½¸¹…Ñ¥½¹¥É•Ñ¥½¸¤ì(€€€€€½¹ÍĞ¡…¹‘A¡É…Í”€ô‘¥É•Ñ¥½¹…±Ñ¥½¸¹¡…¹‘M¥‘”(€€€€€€€€üÑ¡”€‘í‘¥É•Ñ¥½¹…±Ñ¥½¸¹¡…¹‘M¥‘•ô¡…¹‘€(€€€€€€€€è€‰•¥Ñ¡•È…Ù…¥±…‰±”¡…¹ˆì(€€€€€½¹ÍĞ‘¥É•Ñ¥½¹A¡É…Í”€ô‘¥É•Ñ¥½¹…±Ñ¥½¸¹…Ñ¥½¹QåÁ”€ôôô€‰É…ˆˆ(€€€€€€€€ü™É½´Ñ¡”€‘í…Ñ¥½¹¥É•Ñ¥½¸¹¥‘ôÍ¥‘•€(€€€€€€€€è½¸Ñ¡”€‘í…Ñ¥½¹¥É•Ñ¥½¸¹¥‘ôÍ¥‘•€ì(€€€€€½¹ÍĞ…Ñ¥½¹1…‰•°€ô€‘í‘¥É•Ñ¥½¹…±Ñ¥½¸¹…Ñ¥½¹QåÁ”¹Ñ½UÁÁ•É…Í” ¥ô€‘í…Ñ¥½¹¥É•Ñ¥½¸¹¥¹Ñ½UÁÁ•É…Í” ¥õ€ì(€€€€€½¹ÍĞ±…‰•°€ô‘¥É•Ñ¥½¹…±Ñ¥½¸¹¡…¹‘M¥‘”(€€€€€€€€ü€‘í‘¥É•Ñ¥½¹…±Ñ¥½¸¹¡…¹‘M¥‘”¹Ñ½UÁÁ•É…Í” ¥ô€‘í…Ñ¥½¹1…‰•±õ€(€€€€€€€€è…Ñ¥½¹1…‰•°ì(€€€€€½¹ÍĞÉ•…‘¥¹œ€ô‘¥É•Ñ¥½¹…±Ñ¥½¸¹…Ñ¥½¹QåÁ”€ôôô€‰É…ˆˆ(€€€€€€€€üÉ…ˆ…¸…‘©…•¹Ğ±½€‘í‘¥É•Ñ¥½¹A¡É…Í•ôİ¥Ñ €‘í¡…¹‘A¡É…Í•õ€(€€€€€€€€è‘É½À„¡•±±½€‘í‘¥É•Ñ¥½¹A¡É…Í•ô™É½´€‘í¡…¹‘A¡É…Í•õ€ì(€€€€€½¹ÍĞ¥€ô€‘í‘¥É•Ñ¥½¹…±Ñ¥½¸¹¡…¹‘M¥‘”€ü€‘í‘¥É•Ñ¥½¹…±Ñ¥½¸¹¡…¹‘M¥‘•ôµ€€è€ˆ‰ô‘í‘¥É•Ñ¥½¹…±Ñ¥½¸¹…Ñ¥½¹QåÁ•ô´‘í…Ñ¥½¹¥É•Ñ¥½¸¹¥‘õ€ì(€€€€€É•ÑÕÉ¸ÁÉ½Ù¥Í¥½¹…±5•…¹¥¹œ¡¥°€‰µ½Ñ¥Ù”ˆ°±…‰•°°É•…‘¥¹œ°ì(€€€€€€€…Ñ¥½¹QåÁ”è‘¥É•Ñ¥½¹…±Ñ¥½¸¹…Ñ¥½¹QåÁ”°(€€€€€€€¡…¹‘M¥‘”è‘¥É•Ñ¥½¹…±Ñ¥½¸¹¡…¹‘M¥‘”ñğ¹Õ±°°(€€€€€€€…Ñ¥½¹¥É•Ñ¥½¸è…Ñ¥½¹¥É•Ñ¥½¸¹¥(€€€€€ô¤ì(€€€ô(€€€½¹ÍĞ¹½ÑI•‘%‘Ì€ôÁ…¥È ‰¹½Ğˆ°€‰É•ˆ¤ì(€€€¥˜€¡¥‘Ì€ôôôÁ…¥È ‰‘¼ˆ°€‰É•ˆ¤¤ì(€€€€€É•ÑÕÉ¸ÁÉ½Ù¥Í¥½¹…±5•…¹¥¹œ ‰‰”µÉ•ˆ°€‰µ½Ñ¥Ù”ˆ°€‰	Iˆ°€‰‰”É•ˆ°ì½±½É%¹Ñ•¹Ñ5…Í¬è€Äô¤ì(€€€ô(€€€¥˜€¡¥‘Ì€ôôô¹½ÑI•‘%‘Ì¤ì(€€€€€É•ÑÕÉ¸ÁÉ½Ù¥Í¥½¹…±5•…¹¥¹œ ‰¹½ĞµÉ•ˆ°€‰™¥±Ñ•Èˆ°€‰9=PIˆ°€‰±…äÑ¡…Ğ‘½•Ì¹½Ğ½¹Ñ…¥¸É•Á¥µ•¹Ğˆ¤ì(€€€ô(€€€¥˜€¡¥‘Ì€ôôôÁ…¥È ‰¹½Ğˆ°€‰É¥¡Ğµ¡…¹ˆ¤¤ì(€€€€€É•ÑÕÉ¸ÁÉ½Ù¥Í¥½¹…±5•…¹¥¹œ ‰±•™Ğµ¡…¹ˆ°€‰Í•¹Í”µÍ½ÕÉ”ˆ°€‰1P!9ˆ°€‰±•™Ğ¡…¹ˆ°ìÍ•¹Í•Q•áĞè€‰Ñ½Õ ˆô¤ì(€€€ô(€€€¥˜€¡¥‘Ì€ôôôÁ…¥È ‰¹½Ğˆ°€‰±•™Ğµ¡…¹ˆ¤¤ì(€€€€€É•ÑÕÉ¸ÁÉ½Ù¥Í¥½¹…±5•…¹¥¹œ ‰É¥¡Ğµ¡…¹ˆ°€‰Í•¹Í”µÍ½ÕÉ”ˆ°€‰I%!P!9ˆ°€‰É¥¡Ğ¡…¹ˆ°ìÍ•¹Í•Q•áĞè€‰Ñ½Õ ˆô¤ì(€€€ô(€€€¥˜€¡¥‘Ì€ôôôÁ…¥È ‰¹½Ğˆ°€‰¡…¹ˆ¤¤ì(€€€€€É•ÑÕÉ¸ÁÉ½Ù¥Í¥½¹…±5•…¹¥¹œ ‰™¥ÍĞˆ°€‰Í•¹Í”µÍ½ÕÉ”ˆ°€‰%MPˆ°€‰„¡…¹™½Éµ•¥¹Ñ¼„™¥ÍĞˆ°ìÍ•¹Í•Q•áĞè€‰¡½±‘¥¹œˆô¤ì(€€€ô(€€€¥˜€¡¥‘Ì€ôôôÁ…¥È ‰¹½Ğˆ°€‰™¥ÍĞˆ¤¤ì(€€€€€É•ÑÕÉ¸ÁÉ½Ù¥Í¥½¹…±5•…¹¥¹œ ‰¡…¹ˆ°€‰Í•¹Í”µÍ½ÕÉ”ˆ°€‰!9ˆ°€‰„¡…¹½Á•¹•™É½´„™¥ÍĞˆ°ìÍ•¹Í•Q•áĞè€‰Ñ½Õ ˆô¤ì(€€€ô(€€€¥˜€¡¥‘Ì€ôôôÁ…¥È ‰É¥¡Ğˆ°€‰¹½Ğˆ¤¤ì(€€€€€É•ÑÕÉ¸ÁÉ½Ù¥Í¥½¹…±5•…¹¥¹œ ‰±•™Ğˆ°€‰™¥±Ñ•Èˆ°€‰1Pˆ°€‰Ñ¡”±•™Ğ‘¥É•Ñ¥½¸ˆ¤ì(€€€ô(€€€¥˜€¡¥‘Ì€ôôôÁ…¥È ‰¹½Ğˆ°€‰ÕÀˆ¤¤ì(€€€€€É•ÑÕÉ¸ÁÉ½Ù¥Í¥½¹…±5•…¹¥¹œ ‰‘½İ¸ˆ°€‰™¥±Ñ•Èˆ°€‰=]8ˆ°€‰Ñ¡”‘½İ¹İ…É‘¥É•Ñ¥½¸ˆ¤ì(€€€ô(€€€¥˜€¡¥‘Ì€ôôôÁ…¥È ‰±•™Ğˆ°€‰¹½Ğˆ¤¤ì(€€€€€É•ÑÕÉ¸ÁÉ½Ù¥Í¥½¹…±5•…¹¥¹œ ‰É¥¡Ğµ…™Ñ•Èµ‘½Õ‰±”µ¹½Ğˆ°€‰™¥±Ñ•Èˆ°€‰I%!Pˆ°€‰Ñ¡”É¥¡Ğ‘¥É•Ñ¥½¸…™Ñ•È‘½Õ‰±”¹•…Ñ¥½¸ˆ¤ì(€€€ô(€€€¥˜€¡¥‘Ì€ôôôÁ…¥È ‰‘¼µ•å”ˆ°€‰¹½Ğˆ¤ñğ¥‘Ì€ôôôÁ…¥È ‰‘¼ˆ°€‰¹½Ğµ•å”ˆ¤¤ì(€€€€€É•ÑÕÉ¸ÁÉ½Ù¥Í¥½¹…±5•…¹¥¹œ ‰‘¼µ¹½Ğµ±½½¬ˆ°€‰µ½Ñ¥Ù”ˆ°€‰=8P1==,ˆ°€‰‘½¸Ğ±½½¬ˆ°ìÍ½ÕÉ”è€‰ÁÉ½Á½Í•±…¹Õ…”É•…‘¥¹œìÉÕ¹Ñ¥µ”•™™•Ğ¥ÌÕ¹‘•™¥¹•ˆô¤ì(€€€ô(€€€¥˜€¡¥‘Ì€ôôôÁ…¥È ‰¹½Ğˆ°€‰•å”ˆ¤¤ì(€€€€€É•ÑÕÉ¸ÁÉ½Ù¥Í¥½¹…±5•…¹¥¹œ ‰¹½Ğµ•å”ˆ°€‰Í•¹Í”µÍ½ÕÉ”ˆ°€‰9=Peˆ°€‰Ñ¡”¹•…Ñ•e•áÁÉ•ÍÍ¥½¸ì¥ÑÌÉ•…‘¥¹œ‘•Á•¹‘Ì½¸Ñ¡”½ÕÑ•È½Á•É…Ñ½Èˆ°ìÍ•¹Í•Q•áĞè€‰¹½ĞÍ••¥¹œˆô¤ì(€€€ô(€€€¥˜€¡¥‘Ì€ôôôÁ…¥È ‰¹½Ğˆ°€‰İ¡¥±”µ•å”ˆ¤¤ì(€€€€€É•ÑÕÉ¸ÁÉ½Ù¥Í¥½¹…±5•…¹¥¹œ ‰¹½ĞµÍ•”ˆ°€‰Í•¹Í”ˆ°€‰9=PMˆ°€‰İ¡¥±”¹½ĞÍ••¥¹œ…¹åÑ¡¥¹œİ¥Ñ¡¥¸Ñ¡É•”•±±Ìˆ°ì(€€€€€€€Í•¹Í•-¥¹è€‰Í•”ˆ°¹•…Ñ•èÑÉÕ”°Í¥¡ÑI…¹••±±Ìè€Ì°(€€€€€€€Í•¹Í•Q•áĞè€‰¹½ĞÍ••¥¹œ…¹åÑ¡¥¹œİ¥Ñ¡¥¸Ñ¡É•”•±±Ìˆ(€€€€€ô¤ì(€€€ô(€€€¥˜€¡¥‘Ì€ôôôÁ…¥È ‰¹½Ğˆ°€‰İ¡¥±”µ¡…¹ˆ¤¤ì(€€€€€É•ÑÕÉ¸ÁÉ½Ù¥Í¥½¹…±5•…¹¥¹œ ‰¹½ĞµÑ½Õ ˆ°€‰Í•¹Í”ˆ°€‰9=PQ=U ˆ°€‰İ¡¥±”¹½ĞÑ½Õ¡¥¹œ…¹åÑ¡¥¹œˆ°ì(€€€€€€€Í•¹Í•-¥¹è€‰Ñ½Õ ˆ°¹•…Ñ•èÑÉÕ”°(€€€€€€€Í•¹Í•Q•áĞè€‰¹½ĞÑ½Õ¡¥¹œ…¹ä½Ñ¡•È±…ä±½ˆ(€€€€€ô¤ì(€€€ô(€€€¥˜€¡¥‘Ì€ôôôÁ…¥È ‰¹½Ğˆ°€‰İ¡¥±”µ™¥ÍĞˆ¤¤ì(€€€€€É•ÑÕÉ¸ÁÉ½Ù¥Í¥½¹…±5•…¹¥¹œ ‰¹½Ğµ¡½±ˆ°€‰Í•¹Í”ˆ°€‰9=P!=1ˆ°€‰İ¡¥±”¹•¥Ñ¡•È¡…¹¥Ì¡½±‘¥¹œ„±…ä±½ˆ°ì(€€€€€€€Í•¹Í•-¥¹è€‰¡½±ˆ°¹•…Ñ•èÑÉÕ”°(€€€€€€€Í•¹Í•Q•áĞè€‰¹½Ğ¡½±‘¥¹œ…¹åÑ¡¥¹œˆ(€€€€€ô¤ì(€€€ô(€€€¥˜€ ¡±•™Ğ¹¥€ôôô€‰±•™Ğˆñğ±•™Ğ¹¥€ôôô€‰É¥¡Ğˆ¤€˜˜É¥¡Ğ¹¥€ôôô€‰¡…¹ˆñğ(€€€€€€€€¡É¥¡Ğ¹¥€ôôô€‰±•™ĞˆñğÉ¥¡Ğ¹¥€ôôô€‰É¥¡Ğˆ¤€˜˜±•™Ğ¹¥€ôôô€‰¡…¹ˆ¤ì(€€€€€½¹ÍĞ‘¥É•Ñ¥½¸€ô±•™Ğ¹¥€ôôô€‰±•™Ğˆñğ±•™Ğ¹¥€ôôô€‰É¥¡Ğˆ€ü±•™Ğ€èÉ¥¡Ğì(€€€€€É•ÑÕÉ¸ÁÉ½Ù¥Í¥½¹…±5•…¹¥¹œ¡€‘í‘¥É•Ñ¥½¸¹¥‘ôµ¡…¹‘€°€‰Í•¹Í”µÍ½ÕÉ”ˆ°€‘í‘¥É•Ñ¥½¸¹±…‰•±ô!9€°€‘í‘¥É•Ñ¥½¸¹±…‰•°¹Ñ½1½İ•É…Í” ¥ô¡…¹‘€°ìÍ•¹Í•Q•áĞè€‰Ñ½Õ ˆô¤ì(€€€ô(€€€¥˜€ ¡±•™Ğ¹¥€ôôô€‰±•™Ğˆñğ±•™Ğ¹¥€ôôô€‰É¥¡Ğˆ¤€˜˜É¥¡Ğ¹¥€ôôô€‰™¥ÍĞˆñğ(€€€€€€€€¡É¥¡Ğ¹¥€ôôô€‰±•™ĞˆñğÉ¥¡Ğ¹¥€ôôô€‰É¥¡Ğˆ¤€˜˜±•™Ğ¹¥€ôôô€‰™¥ÍĞˆ¤ì(€€€€€½¹ÍĞ‘¥É•Ñ¥½¸€ô±•™Ğ¹¥€ôôô€‰±•™Ğˆñğ±•™Ğ¹¥€ôôô€‰É¥¡Ğˆ€ü±•™Ğ€èÉ¥¡Ğì(€€€€€É•ÑÕÉ¸ÁÉ½Ù¥Í¥½¹…±5•…¹¥¹œ¡€‘í‘¥É•Ñ¥½¸¹¥‘ôµ™¥ÍÑ€°€‰Í•¹Í”µÍ½ÕÉ”ˆ°€‘í‘¥É•Ñ¥½¸¹±…‰•±ô%MQ€°€‘í‘¥É•Ñ¥½¸¹±…‰•°¹Ñ½1½İ•É…Í” ¥ô™¥ÍÑ€°ìÍ•¹Í•Q•áĞè€‰¡½±‘¥¹œˆô¤ì(€€€ô(€€€¥˜€¡±•™Ğ¹¥€ôôô€‰•å”ˆ€˜˜€¡É¥¡Ğ¹…Ñ•½Éä€ôôô€‰™¥±Ñ•ÈˆñğÉ¥¡Ğ¹…Ñ•½Éä€ôôô€‰½±½ÈµÍÑ…Ñ”ˆ¤ñğ(€€€€€€€É¥¡Ğ¹¥€ôôô€‰•å”ˆ€˜˜€¡±•™Ğ¹…Ñ•½Éä€ôôô€‰™¥±Ñ•Èˆñğ±•™Ğ¹…Ñ•½Éä€ôôô€‰½±½ÈµÍÑ…Ñ”ˆ¤¤ì(€€€€€½¹ÍĞ™¥±Ñ•È€ô±•™Ğ¹¥€ôôô€‰•å”ˆ€üÉ¥¡Ğ€è±•™Ğì(€€€€€¥˜€¡l‰±•™Ğˆ°€‰É¥¡Ğˆ°€‰ÕÀˆ°€‰‘½İ¸‰t¹¥¹±Õ‘•Ì¡™¥±Ñ•È¹¥¤¤É•ÑÕÉ¸¹Õ±°ì(€€€€€½¹ÍĞÍ¥¡ÑI•…‘¥¹œ€ôÍ••¥¹œ€‘í9Õµ‰•È¹¥Í%¹Ñ••È¡™¥±Ñ•È¹½±½É5…Í¬¤€ü€‘í™¥±Ñ•È¹±…‰•°¹Ñ½1½İ•É…Í” ¥ôÁ¥µ•¹Ñ€€è™¥±Ñ•È¹É•…‘¥¹õ€ì(€€€€€É•ÑÕÉ¸ÁÉ½Ù¥Í¥½¹…±5•…¹¥¹œ¡Í¥¡Ğ´‘í™¥±Ñ•È¹¥‘õ€°€‰Í•¹Í”ˆ°M€‘í™¥±Ñ•È¹±…‰•±õ€°Í¥¡ÑI•…‘¥¹œ°ì(€€€€€€€Í•¹Í•-¥¹è€‰Í•”ˆ°Í•¹Í•Q•áĞèÍ¥¡ÑI•…‘¥¹œ(€€€€€ô¤ì(€€€ô(€€€¥˜€ ¡±•™Ğ¹¥€ôôô€‰İ¡¥±”µ•å”ˆ€˜˜€¡É¥¡Ğ¹…Ñ•½Éä€ôôô€‰™¥±Ñ•ÈˆñğÉ¥¡Ğ¹…Ñ•½Éä€ôôô€‰½±½ÈµÍÑ…Ñ”ˆ¤¤ñğ(€€€€€€€€¡É¥¡Ğ¹¥€ôôô€‰İ¡¥±”µ•å”ˆ€˜˜€¡±•™Ğ¹…Ñ•½Éä€ôôô€‰™¥±Ñ•Èˆñğ±•™Ğ¹…Ñ•½Éä€ôôô€‰½±½ÈµÍÑ…Ñ”ˆ¤¤¤ì(€€€€€½¹ÍĞ™¥±Ñ•È€ô±•™Ğ¹¥€ôôô€‰İ¡¥±”µ•å”ˆ€üÉ¥¡Ğ€è±•™Ğì(€€€€€½¹ÍĞ‘¥É•Ñ¥½¸€ôl‰±•™Ğˆ°€‰É¥¡Ğˆ°€‰ÕÀˆ°€‰‘½İ¸‰t¹¥¹±Õ‘•Ì¡™¥±Ñ•È¹¥¤€ü™¥±Ñ•È¹¥€è¹Õ±°ì(€€€€€½¹ÍĞÍ¥¡ÑI•…‘¥¹œ€ô‘¥É•Ñ¥½¸(€€€€€€€€üÍ••¥¹œÍ½µ•Ñ¡¥¹œ€‘í‘¥É•Ñ¥½¸€ôôô€‰ÕÀˆ€ü€‰…‰½Ù”ˆ€è‘¥É•Ñ¥½¸€ôôô€‰‘½İ¸ˆ€ü€‰‰•±½Üˆ€èÑ¼Ñ¡”€‘í‘¥É•Ñ¥½¹õõ€(€€€€€€€€èÍ••¥¹œ€‘í9Õµ‰•È¹¥Í%¹Ñ••È¡™¥±Ñ•È¹½±½É5…Í¬¤€ü€‘í™¥±Ñ•È¹±…‰•°¹Ñ½1½İ•É…Í” ¥ôÁ¥µ•¹Ñ€€è™¥±Ñ•È¹É•…‘¥¹õ€ì(€€€€€É•ÑÕÉ¸ÁÉ½Ù¥Í¥½¹…±5•…¹¥¹œ¡İ¡¥±”µÍ¥¡Ğ´‘í™¥±Ñ•È¹¥‘õ€°€‰Í•¹Í”ˆ°M€‘í™¥±Ñ•È¹±…‰•±õ€°İ¡¥±”€‘íÍ¥¡ÑI•…‘¥¹õ€°ì(€€€€€€€Í•¹Í•-¥¹è€‰Í•”ˆ°Í•¹Í•Q•áĞèİ¡¥±”€‘íÍ¥¡ÑI•…‘¥¹õ€°(€€€€€€€€¸¸¸¡9Õµ‰•È¹¥Í%¹Ñ••È¡™¥±Ñ•È¹½±½É5…Í¬¤€üìÍ¥¡Ñ½±½É5…Í¬è™¥±Ñ•È¹½±½É5…Í¬ô€èíô¤°(€€€€€€€€¸¸¸¡‘¥É•Ñ¥½¸€üì‘¥É•Ñ¥½¸°Í¥¡ÑI…¹••±±Ìè€Ìô€èíô¤(€€€€€ô¤ì(€€€ô(€€€¥˜€ ¡±•™Ğ¹¥€ôôô€‰İ¡¥±”µ¡…¹ˆ€˜˜l‰±•™Ğˆ°€‰É¥¡Ğ‰t¹¥¹±Õ‘•Ì¡É¥¡Ğ¹¥¤¤ñğ(€€€€€€€€¡É¥¡Ğ¹¥€ôôô€‰İ¡¥±”µ¡…¹ˆ€˜˜l‰±•™Ğˆ°€‰É¥¡Ğ‰t¹¥¹±Õ‘•Ì¡±•™Ğ¹¥¤¤¤ì(€€€€€½¹ÍĞ‘¥É•Ñ¥½¸€ô±•™Ğ¹¥€ôôô€‰İ¡¥±”µ¡…¹ˆ€üÉ¥¡Ğ€è±•™Ğì(€€€€€½¹ÍĞÍ¥‘”€ô‘¥É•Ñ¥½¸¹¥ì(€€€€€É•ÑÕÉ¸ÁÉ½Ù¥Í¥½¹…±5•…¹¥¹œ¡İ¡¥±”´‘íÍ¥‘•ôµ¡…¹‘€°€‰Í•¹Í”ˆ°€‘íÍ¥‘”¹Ñ½UÁÁ•É…Í” ¥ôQ=U!€°(€€€€€€€İ¡¥±”Ñ½Õ¡¥¹œİ¥Ñ Ñ¡”€‘íÍ¥‘•ô¡…¹‘€°ì(€€€€€€€€€Í•¹Í•-¥¹è€‰Ñ½Õ ˆ°¡…¹‘M¥‘”èÍ¥‘”°(€€€€€€€€€Í•¹Í•Q•áĞèİ¡¥±”Ñ½Õ¡¥¹œİ¥Ñ Ñ¡”€‘íÍ¥‘•ô¡…¹‘€(€€€€€€€ô¤ì(€€€ô(€€€¥˜€ ¡±•™Ğ¹¥€ôôô€‰İ¡¥±”µ¡…¹ˆ€˜˜€¡É¥¡Ğ¹…Ñ•½Éä€ôôô€‰™¥±Ñ•ÈˆñğÉ¥¡Ğ¹…Ñ•½Éä€ôôô€‰½±½ÈµÍÑ…Ñ”ˆ¤¤ñğ(€€€€€€€€¡É¥¡Ğ¹¥€ôôô€‰İ¡¥±”µ¡…¹ˆ€˜˜€¡±•™Ğ¹…Ñ•½Éä€ôôô€‰™¥±Ñ•Èˆñğ±•™Ğ¹…Ñ•½Éä€ôôô€‰½±½ÈµÍÑ…Ñ”ˆ¤¤¤ì(€€€€€½¹ÍĞ½±½È€ô±•™Ğ¹¥€ôôô€‰İ¡¥±”µ¡…¹ˆ€üÉ¥¡Ğ€è±•™Ğì(€€€€€¥˜€¡9Õµ‰•È¹¥Í%¹Ñ••È¡½±½È¹½±½É5…Í¬¤¤ì(€€€€€€€É•ÑÕÉ¸ÁÉ½Ù¥Í¥½¹…±5•…¹¥¹œ¡İ¡¥±”µÑ½Õ ´‘í½±½È¹¥‘õ€°€‰Í•¹Í”ˆ°Q=U €‘í½±½È¹±…‰•±õ€°(€€€€€€€€€İ¡¥±”Ñ½Õ¡¥¹œ€‘í½±½È¹±…‰•°¹Ñ½1½İ•É…Í” ¥ôÁ¥µ•¹Ñ€°ì(€€€€€€€€€€€Í•¹Í•-¥¹è€‰Ñ½Õ ˆ°Í•¹Í•Q•áĞèİ¡¥±”Ñ½Õ¡¥¹œ€‘í½±½È¹±…‰•°¹Ñ½1½İ•É…Í” ¥ôÁ¥µ•¹Ñ€°(€€€€€€€€€€€Ñ½Õ¡½±½É5…Í¬è½±½È¹½±½É5…Í¬(€€€€€€€€€ô¤ì(€€€€€ô(€€€ô(€€€¥˜€ ¡±•™Ğ¹¥€ôôô€‰İ¡¥±”µ¡…¹ˆ€˜˜É¥¡Ğ¹…Ñ•½Éä€ôôô€‰½‰©•Ğµ™¥±Ñ•Èˆ¤ñğ(€€€€€€€€¡É¥¡Ğ¹¥€ôôô€‰İ¡¥±”µ¡…¹ˆ€˜˜±•™Ğ¹…Ñ•½Éä€ôôô€‰½‰©•Ğµ™¥±Ñ•Èˆ¤¤ì(€€€€€½¹ÍĞ½‰©•Ğ€ô±•™Ğ¹¥€ôôô€‰İ¡¥±”µ¡…¹ˆ€üÉ¥¡Ğ€è±•™Ğì(€€€€€½¹ÍĞÁ¡É…Í”€ôİ¡¥±”Ñ½Õ¡¥¹œ€‘í½‰©•Ğ¹É•…‘¥¹õ€ì(€€€€€É•ÑÕÉ¸ÁÉ½Ù¥Í¥½¹…±5•…¹¥¹œ¡İ¡¥±”µÑ½Õ ´‘í½‰©•Ğ¹¥‘õ€°€‰Í•¹Í”ˆ°Q=U €‘í½‰©•Ğ¹±…‰•±õ€°(€€€€€€€Á¡É…Í”°ì(€€€€€€€€€Í•¹Í•-¥¹è€‰Ñ½Õ ˆ°Í•¹Í•Q•áĞèÁ¡É…Í”°(€€€€€€€€€Ñ½Õ¡=‰©•Ñ-¥¹è½‰©•Ğ¹½‰©•Ñ-¥¹°(€€€€€€€€€€¸¸¸¡9Õµ‰•È¹¥Í%¹Ñ••È¡½‰©•Ğ¹½±½É5…Í¬¤€üìÑ½Õ¡½±½É5…Í¬è½‰©•Ğ¹½±½É5…Í¬ô€èíô¤(€€€€€€€ô¤ì(€€€ô(€€€¥˜€ ¡±•™Ğ¹¥€ôôô€‰İ¡¥±”ˆ€˜˜É¥¡Ğ¹…Ñ•½Éä€ôôô€‰Í•¹Í”µÍ½ÕÉ”ˆ¤ñğ(€€€€€€€€¡É¥¡Ğ¹¥€ôôô€‰İ¡¥±”ˆ€˜˜±•™Ğ¹…Ñ•½Éä€ôôô€‰Í•¹Í”µÍ½ÕÉ”ˆ¤¤ì(€€€€€½¹ÍĞÍ•¹Í”€ô±•™Ğ¹¥€ôôô€‰İ¡¥±”ˆ€üÉ¥¡Ğ€è±•™Ğì(€€€€€½¹ÍĞİ¡¥±•A¡É…Í•Ì€ôì(€€€€€€€•å”è€‰İ¡¥±”Í••¥¹œ…¹åÑ¡¥¹œˆ°(€€€€€€€€‰¹½Ğµ•å”ˆè€‰İ¡¥±”¹½ĞÍ••¥¹œˆ°(€€€€€€€¡…¹è€‰İ¡¥±”Ñ½Õ¡¥¹œˆ°(€€€€€€€™¥ÍĞè€‰İ¡¥±”¡½±‘¥¹œˆ°(€€€€€€€™¥Ğè€‰İ¡¥±”Ñ¡”¡•±Á¥••Ì™¥Ğˆ°(€€€€€€€€‰±•™Ğµ¡…¹ˆè€‰İ¡¥±”Ñ½Õ¡¥¹œİ¥Ñ Ñ¡”±•™Ğ¡…¹ˆ°(€€€€€€€€‰É¥¡Ğµ¡…¹ˆè€‰İ¡¥±”Ñ½Õ¡¥¹œİ¥Ñ Ñ¡”É¥¡Ğ¡…¹ˆ°(€€€€€€€€‰±•™Ğµ™¥ÍĞˆè€‰İ¡¥±”¡½±‘¥¹œİ¥Ñ Ñ¡”±•™Ğ¡…¹ˆ°(€€€€€€€€‰É¥¡Ğµ™¥ÍĞˆè€‰İ¡¥±”¡½±‘¥¹œİ¥Ñ Ñ¡”É¥¡Ğ¡…¹ˆ(€€€€€ôì(€€€€€½¹ÍĞÁ¡É…Í”€ôİ¡¥±•A¡É…Í•ÍmÍ•¹Í”¹¥‘tñğİ¡¥±”Í•¹Í¥¹œ€‘íÍ•¹Í”¹Í•¹Í•Q•áĞñğÍ•¹Í”¹É•…‘¥¹õ€ì(€€€€€½¹ÍĞİ¡¥±•1…‰•±Ì€ôì(€€€€€€€•å”è€‰Mˆ°(€€€€€€€€‰¹½Ğµ•å”ˆè€‰9=PMˆ°(€€€€€€€¡…¹è€‰Q=U ˆ°(€€€€€€€™¥ÍĞè€‰!=1ˆ°(€€€€€€€™¥Ğè€‰%Pˆ°(€€€€€€€€‰±•™Ğµ¡…¹ˆè€‰1PQ=U ˆ°(€€€€€€€€‰É¥¡Ğµ¡…¹ˆè€‰I%!PQ=U ˆ°(€€€€€€€€‰±•™Ğµ™¥ÍĞˆè€‰1P!=1ˆ°(€€€€€€€€‰É¥¡Ğµ™¥ÍĞˆè€‰I%!P!=1ˆ(€€€€€ôì(€€€€€½¹ÍĞ±…‰•°€ôİ¡¥±•1…‰•±ÍmÍ•¹Í”¹¥‘tñğÍ•¹Í”¹±…‰•°ì(€€€€€É•ÑÕÉ¸ÁÉ½Ù¥Í¥½¹…±5•…¹¥¹œ¡İ¡¥±”´‘íÍ•¹Í”¹¥‘õ€°€‰Í•¹Í”ˆ°±…‰•°°Á¡É…Í”°ì(€€€€€€€Í•¹Í•Q•áĞèÁ¡É…Í”°(€€€€€€€€¸¸¸¡Í•¹Í”¹¥¹•¹‘Í]¥Ñ  ‰™¥ÍĞˆ¤€üì(€€€€€€€€€Í•¹Í•-¥¹è€‰¡½±ˆ°(€€€€€€€€€€¸¸¸¡Í•¹Í”¹¥€ôôô€‰±•™Ğµ™¥ÍĞˆ€üì¡…¹‘M¥‘”è€‰±•™Ğˆô€èíô¤°(€€€€€€€€€€¸¸¸¡Í•¹Í”¹¥€ôôô€‰É¥¡Ğµ™¥ÍĞˆ€üì¡…¹‘M¥‘”è€‰É¥¡Ğˆô€èíô¤(€€€€€€€ô€èíô¤°(€€€€€€€€¸¸¸¡Í•¹Í”¹¥€ôôô€‰±•™Ğµ¡…¹ˆñğÍ•¹Í”¹¥€ôôô€‰É¥¡Ğµ¡…¹ˆ€üì(€€€€€€€€€Í•¹Í•-¥¹è€‰Ñ½Õ ˆ°(€€€€€€€€€¡…¹‘M¥‘”èÍ•¹Í”¹¥€ôôô€‰±•™Ğµ¡…¹ˆ€ü€‰±•™Ğˆ€è€‰É¥¡Ğˆ(€€€€€€€ô€èíô¤°(€€€€€€€€¸¸¸¡Í•¹Í”¹¥€ôôô€‰•å”ˆ€üìÍ¥¡ÑI…¹••±±Ìè€Ìô€èíô¤(€€€€€ô¤ì(€€€ô(€€€¥˜€ ¡±•™Ğ¹¥€ôôô€‰İ¡¥±”ˆ€˜˜l‰Í•¹Í”ˆ°€‰™¥±Ñ•È‰t¹¥¹±Õ‘•Ì¡É¥¡Ğ¹…Ñ•½Éä¤¤ñğ(€€€€€€€€¡É¥¡Ğ¹¥€ôôô€‰İ¡¥±”ˆ€˜˜l‰Í•¹Í”ˆ°€‰™¥±Ñ•È‰t¹¥¹±Õ‘•Ì¡±•™Ğ¹…Ñ•½Éä¤¤¤ì(€€€€€½¹ÍĞÍ•¹Í”€ô±•™Ğ¹¥€ôôô€‰İ¡¥±”ˆ€üÉ¥¡Ğ€è±•™Ğì(€€€€€½¹ÍĞÁ¡É…Í”€ôÍ•¹Í”¹¥€ôôô€‰¹½ĞµÉ•ˆ(€€€€€€€€ü€‰İ¡¥±”$½¹Ñ…¥¸¹¼É•Á¥µ•¹Ğˆ(€€€€€€€€èİ¡¥±”€‘íÍ•¹Í”¹Í•¹Í•Q•áĞñğÍ•¹Í”¹É•…‘¥¹õ€ì(€€€€€É•ÑÕÉ¸ÁÉ½Ù¥Í¥½¹…±5•…¹¥¹œ¡İ¡¥±”´‘íÍ•¹Í”¹¥‘õ€°€‰Í•¹Í”ˆ°Í•¹Í”¹±…‰•°°Á¡É…Í”°ìÍ•¹Í•Q•áĞèÁ¡É…Í”ô¤ì(€€€ô(€€€¥˜€ ¡±•™Ğ¹¥€ôôô€‰‘¼ˆ€˜˜l‰¡…¹ˆ°€‰™¥ÍĞˆ°€‰É•ˆ°€‰•å”ˆ°€‰¹½Ğµ•å”ˆ°€‰±•™Ğµ¡…¹ˆ°€‰É¥¡Ğµ¡…¹ˆ°€‰±•™Ğµ™¥ÍĞˆ°€‰É¥¡Ğµ™¥ÍĞ‰t¹¥¹±Õ‘•Ì¡É¥¡Ğ¹¥¤¤ñğ(€€€€€€€€¡É¥¡Ğ¹¥€ôôô€‰‘¼ˆ€˜˜l‰¡…¹ˆ°€‰™¥ÍĞˆ°€‰É•ˆ°€‰•å”ˆ°€‰¹½Ğµ•å”ˆ°€‰±•™Ğµ¡…¹ˆ°€‰É¥¡Ğµ¡…¹ˆ°€‰±•™Ğµ™¥ÍĞˆ°€‰É¥¡Ğµ™¥ÍĞ‰t¹¥¹±Õ‘•Ì¡±•™Ğ¹¥¤¤¤ì(€€€€€½¹ÍĞ…Ñ¥½¸€ô±•™Ğ¹¥€ôôô€‰‘¼ˆ€üÉ¥¡Ğ€è±•™Ğì(€€€€€½¹ÍĞ…Ñ¥½¹Ì€ôì(€€€€€€€¡…¹èìÑåÁ”è€‰‘É½Àˆ°±…‰•°è€‰I=@ˆ°É•…‘¥¹œè€‰‘É½À„±½™É½´„É…¹‘½µ±ä¡½Í•¸¡½±‘¥¹œ¡…¹ˆô°(€€€€€€€™¥ÍĞèìÑåÁ”è€‰É…ˆˆ°±…‰•°è€‰Iˆ°É•…‘¥¹œè€‰É…ˆ…¸…‘©…•¹Ğ±½İ¥Ñ „É…¹‘½µ±ä¡½Í•¸™É•”¡…¹ˆô°(€€€€€€€É•èì±…‰•°è€‰Iˆ°É•…‘¥¹œè€‰…‘É•Á¥µ•¹Ğˆô°(€€€€€€€•å”èì±…‰•°è€‰1==,ˆ°É•…‘¥¹œè€‰±½½¬ˆô°(€€€€€€€€‰¹½Ğµ•å”ˆèì±…‰•°è€‰=8P1==,ˆ°É•…‘¥¹œè€‰‘½¸Ğ±½½¬ˆô°(€€€€€€€€‰±•™Ğµ¡…¹ˆèìÑåÁ”è€‰‘É½Àˆ°¡…¹‘M¥‘”è€‰±•™Ğˆ°±…‰•°è€‰1PI=@ˆ°É•…‘¥¹œè€‰‘É½À„±½™É½´Ñ¡”±•™Ğ¡…¹ˆô°(€€€€€€€€‰É¥¡Ğµ¡…¹ˆèìÑåÁ”è€‰‘É½Àˆ°¡…¹‘M¥‘”è€‰É¥¡Ğˆ°±…‰•°è€‰I%!PI=@ˆ°É•…‘¥¹œè€‰‘É½À„±½™É½´Ñ¡”É¥¡Ğ¡…¹ˆô°(€€€€€€€€‰±•™Ğµ™¥ÍĞˆèìÑåÁ”è€‰É…ˆˆ°¡…¹‘M¥‘”è€‰±•™Ğˆ°±…‰•°è€‰1PIˆ°É•…‘¥¹œè€‰É…ˆ…¸…‘©…•¹Ğ±½İ¥Ñ Ñ¡”±•™Ğ¡…¹ˆô°(€€€€€€€€‰É¥¡Ğµ™¥ÍĞˆèìÑåÁ”è€‰É…ˆˆ°¡…¹‘M¥‘”è€‰É¥¡Ğˆ°±…‰•°è€‰I%!PIˆ°É•…‘¥¹œè€‰É…ˆ…¸…‘©…•¹Ğ±½İ¥Ñ Ñ¡”É¥¡Ğ¡…¹ˆô(€€€€€ôì(€€€€€½¹ÍĞ…Ñ¥½¹5•…¹¥¹œ€ô…Ñ¥½¹Ím…Ñ¥½¸¹¥‘tì(€€€€€É•ÑÕÉ¸ÁÉ½Ù¥Í¥½¹…±5•…¹¥¹œ¡‘¼´‘í…Ñ¥½¸¹¥‘õ€°€‰µ½Ñ¥Ù”ˆ°…Ñ¥½¹5•…¹¥¹œ¹±…‰•°°…Ñ¥½¹5•…¹¥¹œ¹É•…‘¥¹œ°ì(€€€€€€€€¸¸¸¡…Ñ¥½¹5•…¹¥¹œ¹ÑåÁ”€üì(€€€€€€€€€…Ñ¥½¹QåÁ”è…Ñ¥½¹5•…¹¥¹œ¹ÑåÁ”°(€€€€€€€€€¡…¹‘M¥‘”è…Ñ¥½¹5•…¹¥¹œ¹¡…¹‘M¥‘”ñğ¹Õ±°(€€€€€€€ô€èíô¤(€€€€€ô¤ì(€€€ô(€€€¥˜€ ¡±•™Ğ¹¥€ôôô€‰¥¸ˆ€˜˜É¥¡Ğ¹¥€ôôô€‰µ”ˆ¤ñğ€¡É¥¡Ğ¹¥€ôôô€‰¥¸ˆ€˜˜±•™Ğ¹¥€ôôô€‰µ”ˆ¤¤ì(€€€€€É•ÑÕÉ¸ÁÉ½Ù¥Í¥½¹…±5•…¹¥¹œ ‰¥¹Í¥‘”µµ”ˆ°€‰¥¹ÍÁ•Ğˆ°€‰%85ˆ°€‰¥¹Í¥‘”µ”ˆ¤ì(€€€ô(€€€¥˜€ ¡±•™Ğ¹¥€ôôô€‰¥¹Í¥‘”µµ”ˆ€˜˜É¥¡Ğ¹…Ñ•½Éä€ôôô€‰™¥±Ñ•Èˆ¤ñğ(€€€€€€€€¡É¥¡Ğ¹¥€ôôô€‰¥¹Í¥‘”µµ”ˆ€˜˜±•™Ğ¹…Ñ•½Éä€ôôô€‰™¥±Ñ•Èˆ¤¤ì(€€€€€½¹ÍĞÁ…ÑÑ•É¸€ô±•™Ğ¹¥€ôôô€‰¥¹Í¥‘”µµ”ˆ€üÉ¥¡Ğ€è±•™Ğì(€€€€€É•ÑÕÉ¸ÁÉ½Ù¥Í¥½¹…±5•…¹¥¹œ¡¥¹Í¥‘”´‘íÁ…ÑÑ•É¸¹¥‘õ€°€‰¥¹ÍÁ•Ğˆ°%85€‘íÁ…ÑÑ•É¸¹±…‰•±õ€°İ¡•Ñ¡•È€‘íÁ…ÑÑ•É¸¹É•…‘¥¹ô½ÕÉÌ…¹åİ¡•É”¥¹Í¥‘”µ•€¤ì(€€€ô(€€€¥˜€¡±•™Ğ¹…Ñ•½Éä€ôôô€‰½±•´ˆ€˜˜É¥¡Ğ¹…Ñ•½Éä€ôôô€‰½±•´ˆ¤ì(€€€€€½¹ÍĞÁ…Ñ¡İ…åÌ€ôl¸¸¹Á…Ñ¡İ…åÍ½É5•…¹¥¹œ¡±•™Ğ¤°€¸¸¹Á…Ñ¡İ…åÍ½É5•…¹¥¹œ¡É¥¡Ğ¥tì(€€€€€¥˜€¡Á…Ñ¡İ…åÌ¹±•¹Ñ €ğ€ÈñğÁ…Ñ¡İ…åÌ¹Í½µ”¡Á…Ñ¡İ…ä€ôø€…Á…Ñ¡İ…ä¹‰•¡…Ù¥½É%µÁ±•µ•¹Ñ•¤¤É•ÑÕÉ¸¹Õ±°ì(€€€€€½¹ÍĞÉ•…‘¥¹œ€ôÁ…Ñ¡İ…åÌ¹µ…À¡Á…Ñ¡İ…ä€ôø(€€€€€€€€‘íÁ…Ñ¡İ…ä¹Í•¹Í”¹É•…‘¥¹œ¹É•Á±…” ½yİ¡¥±”€½¤°€‰İ¡¥±”€ˆ¥ô°Ñ¡•¸€‘íÁ…Ñ¡İ…ä¹µ½Ñ¥Ù”¹É•…‘¥¹õ€(€€€€€€¤¹©½¥¸ ˆì€ˆ¤ì(€€€€€½¹ÍĞ±…‰•°€ôÁ…Ñ¡İ…åÌ¹µ…À¡Á…Ñ¡İ…ä€ôø(€€€€€€€€‘íÁ…Ñ¡İ…ä¹Í•¹Í”¹±…‰•±ôQ!8€‘íÁ…Ñ¡İ…ä¹µ½Ñ¥Ù”¹±…‰•±õ€(€€€€€€¤¹©½¥¸ ˆì€ˆ¤ì(€€€€€É•ÑÕÉ¸ÁÉ½Ù¥Í¥½¹…±5•…¹¥¹œ ‰½µÁ½Õ¹µ½±•´ˆ°€‰½±•´ˆ°±…‰•°°É•…‘¥¹œ°ì(€€€€€€€Á…Ñ¡İ…åÌ°(€€€€€€€‰•¡…Ù¥½É%µÁ±•µ•¹Ñ•èÑÉÕ”(€€€€€ô¤ì(€€€ô(€€€¥˜€ ¡±•™Ğ¹…Ñ•½Éä€ôôô€‰Í•¹Í”ˆ€˜˜É¥¡Ğ¹…Ñ•½Éä€ôôô€‰µ½Ñ¥Ù”ˆ¤ñğ(€€€€€€€€¡É¥¡Ğ¹…Ñ•½Éä€ôôô€‰Í•¹Í”ˆ€˜˜±•™Ğ¹…Ñ•½Éä€ôôô€‰µ½Ñ¥Ù”ˆ¤¤ì(€€€€€½¹ÍĞÍ•¹Í”€ô±•™Ğ¹…Ñ•½Éä€ôôô€‰Í•¹Í”ˆ€ü±•™Ğ€èÉ¥¡Ğì(€€€€€½¹ÍĞµ½Ñ¥Ù”€ô±•™Ğ¹…Ñ•½Éä€ôôô€‰µ½Ñ¥Ù”ˆ€ü±•™Ğ€èÉ¥¡Ğì(€€€€€½¹ÍĞ±…‰•°€ô€‘íÍ•¹Í”¹±…‰•±ôQ!8€‘íµ½Ñ¥Ù”¹±…‰•±õ€ì(€€€€€½¹ÍĞÉ•…‘¥¹œ€ô€‘íÍ•¹Í”¹É•…‘¥¹ôìÑ¡•¸€‘íµ½Ñ¥Ù”¹É•…‘¥¹õ€ì(€€€€€½¹ÍĞ‰•¡…Ù¥½É%µÁ±•µ•¹Ñ•€ô…Ñ¥Ù•M•¹Í•%‘Ì¹¥¹±Õ‘•Ì¡Í•¹Í”¹¥¤€˜˜É•ÍÁ½¹Í•Ñ¥½¹½È¡µ½Ñ¥Ù”¤€„ôô¹Õ±°ì(€€€€€É•ÑÕÉ¸ÁÉ½Ù¥Í¥½¹…±5•…¹¥¹œ ‰½±•´µÁ…¥Èˆ°€‰½±•´ˆ°±…‰•°°É•…‘¥¹œ°ì(€€€€€€€Í•¹Í”°(€€€€€€€µ½Ñ¥Ù”°(€€€€€€€‰•¡…Ù¥½É%µÁ±•µ•¹Ñ•°(€€€€€€€Á…Ñ¡İ…åÌèmìÍ•¹Í”°µ½Ñ¥Ù”°‰•¡…Ù¥½É%µÁ±•µ•¹Ñ•õt°(€€€€€€€€¸¸¸¡‰•¡…Ù¥½É%µÁ±•µ•¹Ñ•€üìÍ¥¡ÑI…¹••±±ÌèÍ•¹Í”¹Í¥¡ÑI…¹••±±Ìñğ€Ìô€èíô¤(€€€€€ô¤ì(€€€ô(€€€¥˜€ ¡±•™Ğ¹…Ñ•½Éä€ôôô€‰Í•¹Í”ˆ€˜˜l‰…¹ˆ°€‰½È‰t¹¥¹±Õ‘•Ì¡É¥¡Ğ¹¥¤¤ñğ(€€€€€€€€¡É¥¡Ğ¹…Ñ•½Éä€ôôô€‰Í•¹Í”ˆ€˜˜l‰…¹ˆ°€‰½È‰t¹¥¹±Õ‘•Ì¡±•™Ğ¹¥¤¤¤ì(€€€€€½¹ÍĞÍ•¹Í”€ô±•™Ğ¹…Ñ•½Éä€ôôô€‰Í•¹Í”ˆ€ü±•™Ğ€èÉ¥¡Ğì(€€€€€½¹ÍĞ½Á•É…Ñ½È€ô±•™Ğ¹¥€ôôô€‰…¹ˆñğ±•™Ğ¹¥€ôôô€‰½Èˆ€ü±•™Ğ€èÉ¥¡Ğì(€€€€€É•ÑÕÉ¸ÁÉ½Ù¥Í¥½¹…±5•…¹¥¹œ¡€‘í½Á•É…Ñ½È¹¥‘ôµÁ•¹‘¥¹œ´‘íÍ•¹Í”¹¥‘õ€°€‰Í•¹Í”µ½Á•É…Ñ½ÈµÁ•¹‘¥¹œˆ°€‘íÍ•¹Í”¹±…‰•±ô€‘í½Á•É…Ñ½È¹±…‰•±ôƒŠ™€°€‘íÍ•¹Í”¹É•…‘¥¹ôì¡½½Í”…¹½Ñ¡•ÈÍ•¹Í”Ñ¼½µÁ±•Ñ”€‘í½Á•É…Ñ½È¹±…‰•±õ€°ì½Á•É…Ñ½Èè½Á•É…Ñ½È¹¥°™¥ÉÍÑM•¹Í”èÍ•¹Í”ô¤ì(€€€ô(€€€¥˜€ ¡±•™Ğ¹…Ñ•½Éä€ôôô€‰Í•¹Í”µ½Á•É…Ñ½ÈµÁ•¹‘¥¹œˆ€˜˜É¥¡Ğ¹…Ñ•½Éä€ôôô€‰Í•¹Í”ˆ¤ñğ(€€€€€€€€¡É¥¡Ğ¹…Ñ•½Éä€ôôô€‰Í•¹Í”µ½Á•É…Ñ½ÈµÁ•¹‘¥¹œˆ€˜˜±•™Ğ¹…Ñ•½Éä€ôôô€‰Í•¹Í”ˆ¤¤ì(€€€€€½¹ÍĞÁ•¹‘¥¹œ€ô±•™Ğ¹…Ñ•½Éä€ôôô€‰Í•¹Í”µ½Á•É…Ñ½ÈµÁ•¹‘¥¹œˆ€ü±•™Ğ€èÉ¥¡Ğì(€€€€€½¹ÍĞ¹•áÑM•¹Í”€ô±•™Ğ¹…Ñ•½Éä€ôôô€‰Í•¹Í”µ½Á•É…Ñ½ÈµÁ•¹‘¥¹œˆ€üÉ¥¡Ğ€è±•™Ğì(€€€€€¥˜€¡Á•¹‘¥¹œ¹™¥ÉÍÑM•¹Í”¹¥€ôôô¹•áÑM•¹Í”¹¥¤É•ÑÕÉ¸¹Õ±°ì(€€€€€½¹ÍĞ©½¥¹•È€ôÁ•¹‘¥¹œ¹½Á•É…Ñ½È€ôôô€‰…¹ˆ€ü€‰…¹ˆ€è€‰½Èˆì(€€€€€É•ÑÕÉ¸ÁÉ½Ù¥Í¥½¹…±5•…¹¥¹œ¡€‘íÁ•¹‘¥¹œ¹½Á•É…Ñ½ÉôµÍ•¹Í•Ì´‘íÁ•¹‘¥¹œ¹™¥ÉÍÑM•¹Í”¹¥‘ô´‘í¹•áÑM•¹Í”¹¥‘õ€°€‰Í•¹Í”ˆ°€‘íÁ•¹‘¥¹œ¹™¥ÉÍÑM•¹Í”¹±…‰•±ô€‘íÁ•¹‘¥¹œ¹½Á•É…Ñ½È¹Ñ½UÁÁ•É…Í” ¥ô€‘í¹•áÑM•¹Í”¹±…‰•±õ€°€‘íÁ•¹‘¥¹œ¹™¥ÉÍÑM•¹Í”¹É•…‘¥¹ô€‘í©½¥¹•Éô€‘í¹•áÑM•¹Í”¹É•…‘¥¹õ€°ìÍ•¹Í•Q•áĞè€‘íÁ•¹‘¥¹œ¹™¥ÉÍÑM•¹Í”¹Í•¹Í•Q•áĞñğÁ•¹‘¥¹œ¹™¥ÉÍÑM•¹Í”¹É•…‘¥¹ô€‘í©½¥¹•Éô€‘í¹•áÑM•¹Í”¹Í•¹Í•Q•áĞñğ¹•áÑM•¹Í”¹É•…‘¥¹õ€ô¤ì(€€€ô(€€€É•ÑÕÉ¸¹Õ±°ì(€ô((€™Õ¹Ñ¥½¸É•ÍÕ±ÑáÁÉ•ÍÍ¥½¸¡±•™ÑáÁÉ•ÍÍ¥½¸°É¥¡ÑáÁÉ•ÍÍ¥½¸¤ì(€€€½¹ÍĞ±•™Ñ5•…¹¥¹œ€ô‘•ÍÉ¥‰”¡±•™ÑáÁÉ•ÍÍ¥½¸¤ì(€€€½¹ÍĞÉ¥¡Ñ5•…¹¥¹œ€ô‘•ÍÉ¥‰”¡É¥¡ÑáÁÉ•ÍÍ¥½¸¤ì(€€€€¼¼!=1¥Ì‰Õ¥±Ğ™É½´]!%1€¬%MP°…¹%MP¥ÑÍ•±˜½¹Ñ…¥¹Ì9=P¸±±½Ü(€€€€¼¼Ñ¡”•áÁ±¥¥Ğ9=P€¬!=1É•¥Á”•Ù•¸Ñ¡½Õ Ñ¡¥Ì…‘‘Ì„Í•½¹9=Pİ½É¸(€€€½¹ÍĞ¥Í9½Ñ!½±€ôÁ…¥È¡±•™Ñ5•…¹¥¹œ¹¥°É¥¡Ñ5•…¹¥¹œ¹¥¤€ôôôÁ…¥È ‰¹½Ğˆ°€‰İ¡¥±”µ™¥ÍĞˆ¤ì(€€€¥˜€ …¥Í9½Ñ!½±€˜˜É•Á•…ÑÍ=Á•É…Ñ½É]½É¡±•™ÑáÁÉ•ÍÍ¥½¸°É¥¡ÑáÁÉ•ÍÍ¥½¸¤¤É•ÑÕÉ¸¹Õ±°ì(€€€½¹ÍĞµ•…¹¥¹œ€ô½µ‰¥¹•5•…¹¥¹œ (€€€€€±•™Ñ5•…¹¥¹œ°É¥¡Ñ5•…¹¥¹œ°±•™ÑáÁÉ•ÍÍ¥½¸°É¥¡ÑáÁÉ•ÍÍ¥½¸(€€€€¤ì(€€€¥˜€ …µ•…¹¥¹œ¤É•ÑÕÉ¸¹Õ±°ì(€€€¥˜€¡µ•…¹¥¹œ¹¥€ôôô€‰É¥¡Ğµ…™Ñ•Èµ‘½Õ‰±”µ¹½Ğˆ¤É•ÑÕÉ¸•±•µ•¹Ğ ‰I%!Pˆ¤ì(€€€É•ÑÕÉ¸½µÁ½Õ¹¡±•™ÑáÁÉ•ÍÍ¥½¸°É¥¡ÑáÁÉ•ÍÍ¥½¸°µ•…¹¥¹œ¤ì(€ô((€™Õ¹Ñ¥½¸É•Á•…ÑÍ=Á•É…Ñ½É]½É¡±•™ÑáÁÉ•ÍÍ¥½¸°É¥¡ÑáÁÉ•ÍÍ¥½¸¤ì(€€€½¹ÍĞ½Á•É…Ñ½É]½É€ô•áÁÉ•ÍÍ¥½¸€ôø•áÁÉ•ÍÍ¥½¸¹ÑåÁ”€ôôô€‰•±•µ•¹Ğˆ€˜˜(€€€€€•±•µ•¹Ñ5•…¹¥¹Ím•áÁÉ•ÍÍ¥½¸¹İ½É‘tü¹…Ñ•½Éä€ôôô€‰½Á•É…Ñ½Èˆ(€€€€€€ü•áÁÉ•ÍÍ¥½¸¹İ½É(€€€€€€è¹Õ±°ì(€€€½¹ÍĞ½¹Ñ…¥¹Í]½É€ô€¡•áÁÉ•ÍÍ¥½¸°İ½É¤€ôø•áÁÉ•ÍÍ¥½¸¹ÑåÁ”€ôôô€‰•±•µ•¹Ğˆ(€€€€€€ü•áÁÉ•ÍÍ¥½¸¹İ½É€ôôôİ½É(€€€€€€è½¹Ñ…¥¹Í]½É¡•áÁÉ•ÍÍ¥½¸¹±•™Ğ°İ½É¤ñğ½¹Ñ…¥¹Í]½É¡•áÁÉ•ÍÍ¥½¸¹É¥¡Ğ°İ½É¤ì(€€€½¹ÍĞ±•™Ñ=Á•É…Ñ½È€ô½Á•É…Ñ½É]½É¡±•™ÑáÁÉ•ÍÍ¥½¸¤ì(€€€½¹ÍĞÉ¥¡Ñ=Á•É…Ñ½È€ô½Á•É…Ñ½É]½É¡É¥¡ÑáÁÉ•ÍÍ¥½¸¤ì(€€€É•ÑÕÉ¸	½½±•…¸ (€€€€€€¡±•™Ñ=Á•É…Ñ½È€˜˜½¹Ñ…¥¹Í]½É¡É¥¡ÑáÁÉ•ÍÍ¥½¸°±•™Ñ=Á•É…Ñ½È¤¤ñğ(€€€€€€¡É¥¡Ñ=Á•É…Ñ½È€˜˜½¹Ñ…¥¹Í]½É¡±•™ÑáÁÉ•ÍÍ¥½¸°É¥¡Ñ=Á•É…Ñ½È¤¤(€€€€¤ì(€ô((€™Õ¹Ñ¥½¸Á±…¥¹1…¹Õ…”¡•áÁÉ•ÍÍ¥½¸¤ì(€€€É•ÑÕÉ¸‘•ÍÉ¥‰”¡•áÁÉ•ÍÍ¥½¸¤¹É•…‘¥¹œñğ€‰9¼É•…‘¥¹œ¡…Ì‰••¸…É••™½ÈÑ¡¥Ì•áÁÉ•ÍÍ¥½¸¸ˆì(€ô((€½¹ÍĞÍÑ…Ñ”€ôì(€€€‰±½­Ìèµ…­•%¹¥Ñ¥…±	±½­Ì ¤°(€€€Í•±•Ñ•‘%è¹Õ±°°(€€€™½ÕÍ•‘%è¹Õ±°°(€€€‘É…œè¹Õ±°°(€€€Ñ…É•Ñ%è¹Õ±°°(€€€±…å½ÕĞèìÍ¥é”è€ÔØ°•±°è€ÜÀ°½±Õµ¹Ìè€Ä°İ¥‘Ñ è€Ä°¡•¥¡Ğè€Ä°‘ÁÈè€Äô°(€€€Á…±•ÑÑ•½Áå½Õ¹Ğè€À(€ôì(€±•Ğ±…ÍÑA…±•ÑÑ•É½ÁQ¥µ”€ô€Àì(€±•ĞÁ…±•ÑÑ•A½¥¹Ñ•ÉÉ…œ€ô¹Õ±°ì(€½¹ÍĞµ½Ù•µ•¹ÑMÁ••€ô€ÄØì(€±•Ğµ½Ù•µ•¹ÑQ¥µ•È€ô¹Õ±°ì(€±•Ğ±…ÍÑ5½Ù•µ•¹ÑQ¥µ”€ô¹Õ±°ì((€™Õ¹Ñ¥½¸Í¡Õ™™±”¡¥Ñ•µÌ¤ì(€€€™½È€¡±•Ğ¤€ô¥Ñ•µÌ¹±•¹Ñ €´€Äì¤€ø€Àì¤€´ô€Ä¤ì(€€€€€½¹ÍĞ¨€ô5…Ñ ¹™±½½È¡5…Ñ ¹É…¹‘½´ ¤€¨€¡¤€¬€Ä¤¤ì(€€€€€m¥Ñ•µÍm¥t°¥Ñ•µÍm©ut€ôm¥Ñ•µÍm©t°¥Ñ•µÍm¥utì(€€€ô(€€€É•ÑÕÉ¸¥Ñ•µÌì(€ô((€™Õ¹Ñ¥½¸…±±	±½­Ì ¤ì(€€€É•ÑÕÉ¸ÍÑ…Ñ”¹‰±½­Ìì(€ô((€™Õ¹Ñ¥½¸É•Í¥é•5…À ¤ì(€€€½¹ÍĞÁÉ•Ù¥½ÕÍ1…å½ÕĞ€ôÍÑ…Ñ”¹±…å½ÕĞì(€€€½¹ÍĞ‰½…É‘MÑå±”€ôİ¥¹‘½Ü¹•Ñ½µÁÕÑ•‘MÑå±”¡µ…Á	½…É¤ì(€€€½¹ÍĞ¡½É¥é½¹Ñ…±A…‘‘¥¹œ€ôÁ…ÉÍ•±½…Ğ¡‰½…É‘MÑå±”¹Á…‘‘¥¹1•™Ğ¤€¬Á…ÉÍ•±½…Ğ¡‰½…É‘MÑå±”¹Á…‘‘¥¹I¥¡Ğ¤ì(€€€½¹ÍĞİ¥‘Ñ €ô5…Ñ ¹µ…à ÈàÀ°µ…Á	½…É¹±¥•¹Ñ]¥‘Ñ €´¡½É¥é½¹Ñ…±A…‘‘¥¹œ¤ì(€€€½¹ÍĞÍ¥é”€ô5…Ñ ¹µ…à ĞĞ°5…Ñ ¹µ¥¸ ØĞ°İ¥‘Ñ €¼€ÄĞ¤¤ì(€€€½¹ÍĞ•±°€ôÍ¥é”€¬€Øì(€€€½¹ÍĞ½±Õµ¹Ì€ô5…Ñ ¹µ…à È°5…Ñ ¹™±½½È ¡İ¥‘Ñ €´€ÄÈ¤€¼•±°¤¤ì(€€€½¹ÍĞ¡•¥¡Ğ€ô5…Ñ ¹µ…à ÔĞÀ°İ¥‘Ñ €¨€ ääÈ€¼€ÄÔàØ¤¤ì(€€€½¹ÍĞÉ½İÌ€ô5…Ñ ¹µ…à Ä°5…Ñ ¹™±½½È¡¡•¥¡Ğ€¼•±°¤¤ì(€€€½¹ÍĞ‘ÁÈ€ôİ¥¹‘½Ü¹‘•Ù¥•A¥á•±I…Ñ¥¼ñğ€Äì(€€€ÍÑ…Ñ”¹±…å½ÕĞ€ôìÍ¥é”°•±°°½±Õµ¹Ì°É½İÌ°İ¥‘Ñ °¡•¥¡Ğ°‘ÁÈôì(€€€•±•µ•¹Ñ	…¹¬¹ÍÑå±”¹Í•ÑAÉ½Á•ÉÑä ˆ´µİ½É±µ•±°µÍ¥é”ˆ°€‘í•±±õÁá€¤ì(€€€•±•µ•¹Ñ	…¹¬¹ÍÑå±”¹Í•ÑAÉ½Á•ÉÑä ˆ´µİ½É±µ±…äµÍ¥é”ˆ°€‘íÍ¥é•õÁá€¤ì(€€€…¹Ù…Ì¹ÍÑå±”¹¡•¥¡Ğ€ô€‘í¡•¥¡ÑõÁá€ì(€€€…¹Ù…Ì¹İ¥‘Ñ €ô5…Ñ ¹É½Õ¹¡İ¥‘Ñ €¨‘ÁÈ¤ì(€€€…¹Ù…Ì¹¡•¥¡Ğ€ô5…Ñ ¹É½Õ¹¡¡•¥¡Ğ€¨‘ÁÈ¤ì(€€€½¹Ñ•áĞ¹Í•ÑQÉ…¹Í™½É´¡‘ÁÈ°€À°€À°‘ÁÈ°€À°€À¤ì(€€€¥˜€¡ÁÉ•Ù¥½ÕÍ1…å½ÕĞ¹İ¥‘Ñ €ğô€ÄñğÁÉ•Ù¥½ÕÍ1…å½ÕĞ¹¡•¥¡Ğ€ğô€Ä¤ì(€€€€€…ÉÉ…¹•	±½­Ì ¤ì(€€€ô•±Í”ì(€€€€€É•™±½İ	±½­Ì¡ÁÉ•Ù¥½ÕÍ1…å½ÕĞ¤ì(€€€ô(€€€É•¹‘•É±•µ•¹Ñ	…¹¬ ¤ì(€€€‘É…İ5…À ¤ì(€ô((€™Õ¹Ñ¥½¸¥µ…•É…µ” ¤ì(€€€½¹ÍĞìİ¥‘Ñ °¡•¥¡Ğô€ôÍÑ…Ñ”¹±…å½ÕĞì(€€€½¹ÍĞ¥µ…•]¥‘Ñ €ôİ½É±‘%µ…”¹¹…ÑÕÉ…±]¥‘Ñ ñğ€ÄÔàØì(€€€½¹ÍĞ¥µ…•!•¥¡Ğ€ôİ½É±‘%µ…”¹¹…ÑÕÉ…±!•¥¡Ğñğ€ääÈì(€€€½¹ÍĞÍ…±”€ô5…Ñ ¹µ…à¡İ¥‘Ñ €¼¥µ…•]¥‘Ñ °¡•¥¡Ğ€¼¥µ…•!•¥¡Ğ¤ì(€€€½¹ÍĞ‘É…İ]¥‘Ñ €ô¥µ…•]¥‘Ñ €¨Í…±”ì(€€€½¹ÍĞ‘É…İ!•¥¡Ğ€ô¥µ…•!•¥¡Ğ€¨Í…±”ì(€€€É•ÑÕÉ¸ì(€€€€€àè€¡İ¥‘Ñ €´‘É…İ]¥‘Ñ ¤€¼€È°(€€€€€äè€¡¡•¥¡Ğ€´‘É…İ!•¥¡Ğ¤€¼€È°(€€€€€İ¥‘Ñ è‘É…İ]¥‘Ñ °(€€€€€¡•¥¡Ğè‘É…İ!•¥¡Ğ(€€€ôì(€ô((€™Õ¹Ñ¥½¸…µ•!Õ‘1…å½ÕĞ ¤ì(€€€½¹ÍĞìİ¥‘Ñ °Í¥é”°•±°ô€ôÍÑ…Ñ”¹±…å½ÕĞì(€€€½¹ÍĞ¥¹Í•Ğ€ô€ÄÀì(€€€½¹ÍĞ½±Õµ¹Ì€ô5…Ñ ¹µ…à Ä°5…Ñ ¹™±½½È ¡İ¥‘Ñ €´¥¹Í•Ğ€¨€È¤€¼•±°¤¤ì(€€€½¹ÍĞÉ½İÌ€ô5…Ñ ¹•¥°¡•±•µ•¹Ñ]½É‘Ì¹±•¹Ñ €¼½±Õµ¹Ì¤ì(€€€½¹ÍĞÑ¥Ñ±•!•¥¡Ğ€ô5…Ñ ¹µ…à Ìà°5…Ñ ¹µ¥¸ ÔĞ°Í¥é”€¨€À¸àÈ¤¤ì(€€€½¹ÍĞÉ¥‘Q½À€ô¥¹Í•Ğ€¬Ñ¥Ñ±•!•¥¡Ğ€¬€Ğì(€€€½¹ÍĞÉ¥‘]¥‘Ñ €ô½±Õµ¹Ì€¨•±°ì(€€€½¹ÍĞÉ¥‘1•™Ğ€ô€¡İ¥‘Ñ €´É¥‘]¥‘Ñ ¤€¼€Èì(€€€½¹ÍĞÉ¥‘!•¥¡Ğ€ôÉ½İÌ€¨•±°ì(€€€½¹ÍĞ‰½ÑÑ½´€ôÉ¥‘Q½À€¬É¥‘!•¥¡Ğ€¬€àì(€€€½¹ÍĞÑ½­•¹Ì€ô•±•µ•¹Ñ]½É‘Ì¹µ…À ¡İ½É°¥¹‘•à¤€ôøì(€€€€€½¹ÍĞ½±Õµ¸€ô¥¹‘•à€”½±Õµ¹Ìì(€€€€€½¹ÍĞÉ½Ü€ô5…Ñ ¹™±½½È¡¥¹‘•à€¼½±Õµ¹Ì¤ì(€€€€€½¹ÍĞ±•™Ğ€ôÉ¥‘1•™Ğ€¬½±Õµ¸€¨•±°€¬€¡•±°€´Í¥é”¤€¼€Èì(€€€€€½¹ÍĞÑ½À€ôÉ¥‘Q½À€¬É½Ü€¨•±°€¬€¡•±°€´Í¥é”¤€¼€Èì(€€€€€É•ÑÕÉ¸ìİ½É°±•™Ğ°Ñ½À°É¥¡Ğè±•™Ğ€¬Í¥é”°‰½ÑÑ½´èÑ½À€¬Í¥é”ôì(€€€ô¤ì(€€€É•ÑÕÉ¸ì(€€€€€‰½Õ¹‘Ìèì±•™Ğè€À°Ñ½Àè€À°É¥¡Ğèİ¥‘Ñ °‰½ÑÑ½´ô°(€€€€€Ñ½­•¹Ì°(€€€€€Ñ¥Ñ±•!•¥¡Ğ°(€€€€€¥¹Í•Ğ°(€€€€€Í¥é”(€€€ôì(€ô((€™Õ¹Ñ¥½¸½Ù•É±…ÁÍ…µ•!Õ¡à°ä°Í¥é”¤ì(€€€½¹ÍĞ¡Õ‘	½ÑÑ½´€ô…µ•!Õ‘1…å½ÕĞ ¤¹‰½Õ¹‘Ì¹‰½ÑÑ½´ì(€€€É•ÑÕÉ¸à€ğÍÑ…Ñ”¹±…å½ÕĞ¹İ¥‘Ñ €˜˜à€¬Í¥é”€ø€À€˜˜ä€ğ¡Õ‘	½ÑÑ½´€˜˜ä€¬Í¥é”€ø€Àì(€ô((€™Õ¹Ñ¥½¸Á½¥¹Ñ%¹A½±å½¸¡à°ä¤ì(€€€±•Ğ¥¹Í¥‘”€ô™…±Í”ì(€€€™½È€¡±•Ğ¤€ô€À°¨€ô±•…É¥¹A½±å½¸¹±•¹Ñ €´€Äì¤€ğ±•…É¥¹A½±å½¸¹±•¹Ñ ì¨€ô¤°¤€¬ô€Ä¤ì(€€€€€½¹ÍĞmá¤°å¥t€ô±•…É¥¹A½±å½¹m¥tì(€€€€€½¹ÍĞmá¨°å©t€ô±•…É¥¹A½±å½¹m©tì(€€€€€½¹ÍĞÉ½ÍÍ•Ì€ô€¡å¤€øä¤€„ôô€¡å¨€øä¤€˜˜(€€€€€€€à€ğ€ ¡á¨€´á¤¤€¨€¡ä€´å¤¤¤€¼€¡å¨€´å¤¤€¬á¤ì(€€€€€¥˜€¡É½ÍÍ•Ì¤¥¹Í¥‘”€ô€…¥¹Í¥‘”ì(€€€ô(€€€É•ÑÕÉ¸¥¹Í¥‘”ì(€ô((€™Õ¹Ñ¥½¸¥ÍM…™••±°¡à°ä°Í¥é”°™É…µ”¤ì(€€€½¹ÍĞ¥¹Í•Ğ€ô5…Ñ ¹µ¥¸ Ì°Í¥é”€¼€ÄÀ¤ì(€€€½¹ÍĞ½É¹•ÉÌ€ôl(€€€€€mà€¬¥¹Í•Ğ°ä€¬¥¹Í•Ñt°mà€¬Í¥é”€´¥¹Í•Ğ°ä€¬¥¹Í•Ñt°(€€€€€mà€¬¥¹Í•Ğ°ä€¬Í¥é”€´¥¹Í•Ñt°mà€¬Í¥é”€´¥¹Í•Ğ°ä€¬Í¥é”€´¥¹Í•Ñt°(€€€€€mà€¬Í¥é”€¼€È°ä€¬Í¥é”€¼€Ét(€€€tì(€€€É•ÑÕÉ¸½É¹•ÉÌ¹•Ù•Éä ¡m…¹Ù…Í`°…¹Ù…Íet¤€ôøì(€€€€€½¹ÍĞ¥µ…•`€ô€¡…¹Ù…Í`€´™É…µ”¹à¤€¼™É…µ”¹İ¥‘Ñ ì(€€€€€½¹ÍĞ¥µ…•d€ô€¡…¹Ù…Íd€´™É…µ”¹ä¤€¼™É…µ”¹¡•¥¡Ğì(€€€€€É•ÑÕÉ¸Á½¥¹Ñ%¹A½±å½¸¡¥µ…•`°¥µ…•d¤ì(€€€ô¤ì(€ô((€™Õ¹Ñ¥½¸±•…É¥¹•±±Ì¡•±°°Í¥é”¤ì(€€€½¹ÍĞìİ¥‘Ñ °¡•¥¡Ğô€ôÍÑ…Ñ”¹±…å½ÕĞì(€€€½¹ÍĞ™É…µ”€ô¥µ…•É…µ” ¤ì(€€€½¹ÍĞ¥¹Í•Ğ€ô€¡•±°€´Í¥é”¤€¼€Èì(€€€½¹ÍĞ•±±Ì€ômtì(€€€½¹ÍĞ½±Õµ¹Ì€ô5…Ñ ¹™±½½È¡İ¥‘Ñ €¼•±°¤ì(€€€½¹ÍĞÉ½İÌ€ô5…Ñ ¹™±½½È¡¡•¥¡Ğ€¼•±°¤ì(€€€™½È€¡±•ĞÉ½Ü€ô€ÀìÉ½Ü€ğÉ½İÌìÉ½Ü€¬ô€Ä¤ì(€€€€€™½È€¡±•Ğ½±Õµ¸€ô€Àì½±Õµ¸€ğ½±Õµ¹Ìì½±Õµ¸€¬ô€Ä¤ì(€€€€€€€½¹ÍĞà€ô½±Õµ¸€¨•±°€¬¥¹Í•Ğì(€€€€€€€½¹ÍĞä€ôÉ½Ü€¨•±°€¬¥¹Í•Ğì(€€€€€€€¥˜€¡¥ÍM…™••±°¡à°ä°Í¥é”°™É…µ”¤¤•±±Ì¹ÁÕÍ ¡ìà°äô¤ì(€€€€€ô(€€€ô(€€€É•ÑÕÉ¸•±±Ìì(€ô((€™Õ¹Ñ¥½¸…ÉÉ…¹•	±½­Ì ¤ì(€€€½¹ÍĞìÍ¥é”ô€ôÍÑ…Ñ”¹±…å½ÕĞì(€€€½¹ÍĞ™É…µ”€ô¥µ…•É…µ” ¤ì(€€€½¹ÍĞÁ±…•€ômtì(€€€½¹ÍĞÁ±…•‘	±½­Ì€ôÍ¡Õ™™±”¡l¸¸¹ÍÑ…Ñ”¹‰±½­Ít¤ì(€€€ÍÑ…Ñ”¹‰±½­Ì¹™½É… ¡‰±½¬€ôøì‰±½¬¹Õ¹Á±…•€ô™…±Í”ìô¤ì(€€€½¹ÍĞ½Ù•É±…ÁÍA±…•€ô€¡à°ä¤€ôøÁ±…•¹Í½µ”¡½Ñ¡•È€ôø(€€€€€à€ğ½Ñ¡•È¹à€¬Í¥é”€¬€È€˜˜à€¬Í¥é”€¬€È€ø½Ñ¡•È¹à€˜˜(€€€€€ä€ğ½Ñ¡•È¹ä€¬Í¥é”€¬€È€˜˜ä€¬Í¥é”€¬€È€ø½Ñ¡•È¹ä(€€€€¤ì(€€€½¹ÍĞ¥Í=Á•¸€ô€¡à°ä°ÍÑÉ¥Ñ±•…É¥¹œ¤€ôø(€€€€€€¡ÍÑÉ¥Ñ±•…É¥¹œ€ü¥ÍM…™••±°¡à°ä°Í¥é”°™É…µ”¤€è¥¹Í¥‘•±•…É¥¹œ¡à°ä°Í¥é”°™É…µ”¤¤€˜˜(€€€€€€…½Ù•É±…ÁÍ…µ•!Õ¡à°ä°Í¥é”¤€˜˜(€€€€€€…½Ù•É±…ÁÍA±…•¡à°ä¤ì((€€€€¼¼QÉäÉ…¹‘½µ¥é•Á½Í¥Ñ¥½¹Ì¥¸Ñ¡”±•…É¥¹œ¸%˜É…¹‘½´Á…­¥¹œ±•…Ù•Ì„(€€€€¼¼Íµ…±°…İ­İ…É…À°ÕÍ”„™¥¹”Í…¸¥¹ÍÑ•…½˜Í•¹‘¥¹œ‰±½­ÌÑ¼€ À°€À¤¸(€€€½¹ÍĞ™¥¹‘=Á•¹A½Í¥Ñ¥½¸€ô€¡ÍÑÉ¥Ñ±•…É¥¹œ¤€ôøì(€€€€€½¹ÍĞµ…á`€ôÍÑ…Ñ”¹±…å½ÕĞ¹İ¥‘Ñ €´Í¥é”ì(€€€€€½¹ÍĞµ…ád€ôÍÑ…Ñ”¹±…å½ÕĞ¹¡•¥¡Ğ€´Í¥é”ì(€€€€€™½È€¡±•Ğ…ÑÑ•µÁĞ€ô€Àì…ÑÑ•µÁĞ€ğ€ÔÀÀÀì…ÑÑ•µÁĞ€¬ô€Ä¤ì(€€€€€€€½¹ÍĞà€ô5…Ñ ¹É…¹‘½´ ¤€¨µ…á`ì(€€€€€€€½¹ÍĞä€ô5…Ñ ¹É…¹‘½´ ¤€¨µ…ádì(€€€€€€€¥˜€¡¥Í=Á•¸¡à°ä°ÍÑÉ¥Ñ±•…É¥¹œ¤¤É•ÑÕÉ¸ìà°äôì(€€€€€ô(€€€€€™½È€¡±•Ğä€ô€Àìä€ğôµ…ádìä€¬ô€È¤ì(€€€€€€€™½È€¡±•Ğà€ô€Àìà€ğôµ…á`ìà€¬ô€È¤ì(€€€€€€€€€¥˜€¡¥Í=Á•¸¡à°ä°ÍÑÉ¥Ñ±•…É¥¹œ¤¤É•ÑÕÉ¸ìà°äôì(€€€€€€€ô(€€€€€ô(€€€€€É•ÑÕÉ¸¹Õ±°ì(€€€ôì((€€€™½È€¡½¹ÍĞ‰±½¬½˜Á±…•‘	±½­Ì¤ì(€€€€€€¼¼Q¡”•¹Ñ•Èµ½¹±ä™…±±‰…¬¥ÌÕÍ•½¹±ä™½È…¸Õ¹ÕÍÕ…±±äÑ¥¡Ğ¹…ÉÉ½Ü(€€€€€€¼¼Ù¥•İÁ½ÉĞì¥ĞÍÑ¥±°­••ÁÌÑ¡”±…ä¥¹Í¥‘”Ñ¡”µ…É­•±•…É¥¹œ¸(€€€€€½¹ÍĞÁ½Í¥Ñ¥½¸€ô™¥¹‘=Á•¹A½Í¥Ñ¥½¸¡ÑÉÕ”¤ñğ™¥¹‘=Á•¹A½Í¥Ñ¥½¸¡™…±Í”¤ì(€€€€€¥˜€ …Á½Í¥Ñ¥½¸¤ì(€€€€€€€‰±½¬¹Õ¹Á±…•€ôÑÉÕ”ì(€€€€€€€½¹Ñ¥¹Õ”ì(€€€€€ô(€€€€€‰±½¬¹Õ¹Á±…•€ô™…±Í”ì(€€€€€‰±½¬¹à€ôÁ½Í¥Ñ¥½¸¹àì(€€€€€‰±½¬¹ä€ôÁ½Í¥Ñ¥½¸¹äì(€€€€€Á±…•¹ÁÕÍ ¡‰±½¬¤ì(€€€ô((€€€€¼¼-••ÀÑ¡”ÍÁ…¥¹œµ•Ñ…‘…Ñ„…±¥¹•İ¥Ñ Ñ¡”…¹Ù…Ì•Ù•¸Ñ¡½Õ Á±…•µ•¹Ğ(€€€€¼¼¥Ì™É•”µ™½É´É…Ñ¡•ÈÑ¡…¸É•ÍÑÉ¥Ñ•Ñ¼„É¥¸(€€€ÍÑ…Ñ”¹±…å½ÕĞ¹½±Õµ¹Ì€ô5…Ñ ¹™±½½È¡ÍÑ…Ñ”¹±…å½ÕĞ¹İ¥‘Ñ €¼ÍÑ…Ñ”¹±…å½ÕĞ¹•±°¤ì(€€€ÍÑ…Ñ”¹±…å½ÕĞ¹É½İÌ€ô5…Ñ ¹™±½½È¡ÍÑ…Ñ”¹±…å½ÕĞ¹¡•¥¡Ğ€¼ÍÑ…Ñ”¹±…å½ÕĞ¹•±°¤ì(€ô((€™Õ¹Ñ¥½¸É•™±½İ	±½­Ì¡ÁÉ•Ù¥½ÕÍ1…å½ÕĞ¤ì(€€€½¹ÍĞìÍ¥é”°İ¥‘Ñ °¡•¥¡Ğô€ôÍÑ…Ñ”¹±…å½ÕĞì(€€€½¹ÍĞ™É…µ”€ô¥µ…•É…µ” ¤ì(€€€½¹ÍĞÁ±…•€ômtì(€€€½¹ÍĞ½É‘•É•‘	±½­Ì€ôl¸¸¹ÍÑ…Ñ”¹‰±½­Ít¹Í½ÉĞ ¡„°ˆ¤€ôøì(€€€€€½¹ÍĞÁÉ¥½É¥Ñä€ô‰±½¬€ôø(€€€€€€€€¡µ½Ù•µ•¹Ñ½È¡‰±½¬¤€ü€À€è€Ä¤€¬(€€€€€€€€¡‰±½¬¹¥€ôôôÍÑ…Ñ”¹Í•±•Ñ•‘%€ü€À€è€Ä¤€¬(€€€€€€€€¡‰±½¬¹Õ¹Á±…•€ü€È€è€À¤ì(€€€€€É•ÑÕÉ¸ÁÉ¥½É¥Ñä¡„¤€´ÁÉ¥½É¥Ñä¡ˆ¤ì(€€€ô¤ì(€€€½¹ÍĞ½Ù•É±…ÁÍA±…•€ô€¡à°ä¤€ôøÁ±…•¹Í½µ”¡½Ñ¡•È€ôø(€€€€€à€ğ½Ñ¡•È¹à€¬Í¥é”€¬€È€˜˜à€¬Í¥é”€¬€È€ø½Ñ¡•È¹à€˜˜(€€€€€ä€ğ½Ñ¡•È¹ä€¬Í¥é”€¬€È€˜˜ä€¬Í¥é”€¬€È€ø½Ñ¡•È¹ä(€€€€¤ì(€€€½¹ÍĞ¥Í=Á•¸€ô€¡à°ä¤€ôø(€€€€€€¡¥ÍM…™••±°¡à°ä°Í¥é”°™É…µ”¤ñğ¥¹Í¥‘•±•…É¥¹œ¡à°ä°Í¥é”°™É…µ”¤¤€˜˜(€€€€€€…½Ù•É±…ÁÍ…µ•!Õ¡à°ä°Í¥é”¤€˜˜(€€€€€€…½Ù•É±…ÁÍA±…•¡à°ä¤ì(€€€½¹ÍĞ‰½Õ¹‘•€ô€¡Ù…±Õ”°µ…á¥µÕ´¤€ôø5…Ñ ¹µ…à À°5…Ñ ¹µ¥¸¡µ…á¥µÕ´°Ù…±Õ”¤¤ì(€€€½¹ÍĞ™¥¹‘9•…È€ô€¡½É¥¥¹`°½É¥¥¹d¤€ôøì(€€€€€½¹ÍĞµ…á`€ôİ¥‘Ñ €´Í¥é”ì(€€€€€½¹ÍĞµ…ád€ô¡•¥¡Ğ€´Í¥é”ì(€€€€€½¹ÍĞà€ô‰½Õ¹‘•¡½É¥¥¹`°µ…á`¤ì(€€€€€½¹ÍĞä€ô‰½Õ¹‘•¡½É¥¥¹d°µ…ád¤ì(€€€€€¥˜€¡¥Í=Á•¸¡à°ä¤¤É•ÑÕÉ¸ìà°äôì((€€€€€€¼¼M•…É ½ÕÑİ…É™É½´Ñ¡”Í…±•Á½¥¹ĞÍ¼„É•Í¥é”½¹±ä¹Õ‘•Ì„ÍÅÕ…É”(€€€€€€¼¼İ¡•¸Ñ¡”¹•Ü±•…É¥¹œ‰½Õ¹‘…Éä½È„¹•¥¡‰½Èµ…­•Ì¥ÑÌ½±ÍÁ½Ğ¥¹Ù…±¥¸(€€€€€½¹ÍĞÍÑ•À€ô5…Ñ ¹µ…à Ì°5…Ñ ¹™±½½È¡Í¥é”€¼€ÄÈ¤¤ì(€€€€€½¹ÍĞµ…áI…‘¥ÕÌ€ô5…Ñ ¹µ…à¡İ¥‘Ñ °¡•¥¡Ğ¤ì(€€€€€™½È€¡±•ĞÉ…‘¥ÕÌ€ôÍÑ•ÀìÉ…‘¥ÕÌ€ğôµ…áI…‘¥ÕÌìÉ…‘¥ÕÌ€¬ôÍÑ•À¤ì(€€€€€€€½¹ÍĞÍ•µ•¹ÑÌ€ô5…Ñ ¹µ…à ÄØ°5…Ñ ¹•¥° ¡5…Ñ ¹A$€¨€È€¨É…‘¥ÕÌ¤€¼ÍÑ•À¤¤ì(€€€€€€€™½È€¡±•Ğ¥¹‘•à€ô€Àì¥¹‘•à€ğÍ•µ•¹ÑÌì¥¹‘•à€¬ô€Ä¤ì(€€€€€€€€€½¹ÍĞ…¹±”€ô€¡¥¹‘•à€¼Í•µ•¹ÑÌ¤€¨5…Ñ ¹A$€¨€Èì(€€€€€€€€€½¹ÍĞ…¹‘¥‘…Ñ•`€ô‰½Õ¹‘•¡à€¬5…Ñ ¹½Ì¡…¹±”¤€¨É…‘¥ÕÌ°µ…á`¤ì(€€€€€€€€€½¹ÍĞ…¹‘¥‘…Ñ•d€ô‰½Õ¹‘•¡ä€¬5…Ñ ¹Í¥¸¡…¹±”¤€¨É…‘¥ÕÌ°µ…ád¤ì(€€€€€€€€€¥˜€¡¥Í=Á•¸¡…¹‘¥‘…Ñ•`°…¹‘¥‘…Ñ•d¤¤É•ÑÕÉ¸ìàè…¹‘¥‘…Ñ•`°äè…¹‘¥‘…Ñ•dôì(€€€€€€€ô(€€€€€ô((€€€€€€¼¼™¥¹”‘•Ñ•Éµ¥¹¥ÍÑ¥ŒÍ…¸¡…¹‘±•Ì¹…ÉÉ½ÜÉ•µ…¥¹¥¹œ…ÁÌ½¸Íµ…±°Ù¥•İÌ¸(€€€€€™½È€¡±•ĞÍ…¹d€ô€ÀìÍ…¹d€ğôµ…ádìÍ…¹d€¬ôÍÑ•À¤ì(€€€€€€€™½È€¡±•ĞÍ…¹`€ô€ÀìÍ…¹`€ğôµ…á`ìÍ…¹`€¬ôÍÑ•À¤ì(€€€€€€€€€¥˜€¡¥Í=Á•¸¡Í…¹`°Í…¹d¤¤É•ÑÕÉ¸ìàèÍ…¹`°äèÍ…¹dôì(€€€€€€€ô(€€€€€ô(€€€€€É•ÑÕÉ¸¹Õ±°ì(€€€ôì((€€€™½È€¡½¹ÍĞ‰±½¬½˜½É‘•É•‘	±½­Ì¤ì(€€€€€½¹ÍĞ½±‘•¹Ñ•É`€ô‰±½¬¹à€¬ÁÉ•Ù¥½ÕÍ1…å½ÕĞ¹Í¥é”€¼€Èì(€€€€€½¹ÍĞ½±‘•¹Ñ•Éd€ô‰±½¬¹ä€¬ÁÉ•Ù¥½ÕÍ1…å½ÕĞ¹Í¥é”€¼€Èì(€€€€€½¹ÍĞ‘•Í¥É•‘`€ô€¡½±‘•¹Ñ•É`€¼ÁÉ•Ù¥½ÕÍ1…å½ÕĞ¹İ¥‘Ñ ¤€¨İ¥‘Ñ €´Í¥é”€¼€Èì(€€€€€½¹ÍĞ‘•Í¥É•‘d€ô€¡½±‘•¹Ñ•Éd€¼ÁÉ•Ù¥½ÕÍ1…å½ÕĞ¹¡•¥¡Ğ¤€¨¡•¥¡Ğ€´Í¥é”€¼€Èì(€€€€€½¹ÍĞÁ½Í¥Ñ¥½¸€ô™¥¹‘9•…È¡‘•Í¥É•‘`°‘•Í¥É•‘d¤ì(€€€€€¥˜€ …Á½Í¥Ñ¥½¸¤ì(€€€€€€€‰±½¬¹Õ¹Á±…•€ôÑÉÕ”ì(€€€€€€€½¹Ñ¥¹Õ”ì(€€€€€ô(€€€€€‰±½¬¹à€ôÁ½Í¥Ñ¥½¸¹àì(€€€€€‰±½¬¹ä€ôÁ½Í¥Ñ¥½¸¹äì(€€€€€‰±½¬¹Õ¹Á±…•€ô™…±Í”ì(€€€€€Á±…•¹ÁÕÍ ¡‰±½¬¤ì(€€€ô(€€€ÍÑ…Ñ”¹±…å½ÕĞ¹½±Õµ¹Ì€ô5…Ñ ¹™±½½È¡İ¥‘Ñ €¼ÍÑ…Ñ”¹±…å½ÕĞ¹•±°¤ì(€€€ÍÑ…Ñ”¹±…å½ÕĞ¹É½İÌ€ô5…Ñ ¹™±½½È¡¡•¥¡Ğ€¼ÍÑ…Ñ”¹±…å½ÕĞ¹•±°¤ì(€ô((€™Õ¹Ñ¥½¸Ñ¥¹Ñ•‘MÁÉ¥Ñ”¡Í½ÕÉ•%µ…”°½±½É5…Í¬°…¡”¤ì(€€€¥˜€¡…¡”¹¡…Ì¡½±½É5…Í¬¤¤É•ÑÕÉ¸…¡”¹•Ğ¡½±½É5…Í¬¤ì(€€€½¹ÍĞÑ¥¹Ğ€ôì(€€€€€€Äè€‰Éˆ ÄäÀ€ÔÔ€Ğà€¼€ÈÔ”¤ˆ°(€€€€€€Èè€‰Éˆ Øà€ÄĞÌ€ÜÌ€¼€ÈÔ”¤ˆ°(€€€€€€Ìè€‰Éˆ ÈÈÈ€ÄäÈ€ÔÔ€¼€ÈÔ”¤ˆ°(€€€€€€Ğè€‰Éˆ ØÔ€ÄÄÈ€ÄäÌ€¼€ÈÔ”¤ˆ°(€€€€€€Ôè€‰Éˆ ÄäØ€ØÜ€ÄÔÜ€¼€ÈÔ”¤ˆ°(€€€€€€Øè€‰Éˆ ØÄ€ÄàÌ€ÄàĞ€¼€ÈÔ”¤ˆ°(€€€€€€Üè€‰Éˆ ÈÌà€ÈÌä€ÈÈà€¼€ÌÈ”¤ˆ(€€€õm½±½É5…Í­tñğ€‰Éˆ Ğà€ÔÄ€ÔÜ€¼€ÔÀ”¤ˆì(€€€½¹ÍĞÍÁÉ¥Ñ”€ô‘½Õµ•¹Ğ¹É•…Ñ•±•µ•¹Ğ ‰…¹Ù…Ìˆ¤ì(€€€ÍÁÉ¥Ñ”¹İ¥‘Ñ €ôÍ½ÕÉ•%µ…”¹¹…ÑÕÉ…±]¥‘Ñ ñğ€ØĞì(€€€ÍÁÉ¥Ñ”¹¡•¥¡Ğ€ôÍ½ÕÉ•%µ…”¹¹…ÑÕÉ…±!•¥¡Ğñğ€ØĞì(€€€½¹ÍĞÍÁÉ¥Ñ•½¹Ñ•áĞ€ôÍÁÉ¥Ñ”¹•Ñ½¹Ñ•áĞ ˆÉˆ¤ì(€€€¥˜€¡Í½ÕÉ•%µ…”¹½µÁ±•Ñ”€˜˜Í½ÕÉ•%µ…”¹¹…ÑÕÉ…±]¥‘Ñ ¤ì(€€€€€ÍÁÉ¥Ñ•½¹Ñ•áĞ¹‘É…İ%µ…”¡Í½ÕÉ•%µ…”°€À°€À°ÍÁÉ¥Ñ”¹İ¥‘Ñ °ÍÁÉ¥Ñ”¹¡•¥¡Ğ¤ì(€€€€€ÍÁÉ¥Ñ•½¹Ñ•áĞ¹±½‰…±½µÁ½Í¥Ñ•=Á•É…Ñ¥½¸€ô€‰Í½ÕÉ”µ…Ñ½Àˆì(€€€€€ÍÁÉ¥Ñ•½¹Ñ•áĞ¹™¥±±MÑå±”€ôÑ¥¹Ğì(€€€€€ÍÁÉ¥Ñ•½¹Ñ•áĞ¹™¥±±I•Ğ À°€À°ÍÁÉ¥Ñ”¹İ¥‘Ñ °ÍÁÉ¥Ñ”¹¡•¥¡Ğ¤ì(€€€ô(€€€…¡”¹Í•Ğ¡½±½É5…Í¬°ÍÁÉ¥Ñ”¤ì(€€€É•ÑÕÉ¸ÍÁÉ¥Ñ”ì(€ô((€™Õ¹Ñ¥½¸Ñ¥¹Ñ•‘±…ä¡½±½É5…Í¬¤ì(€€€É•ÑÕÉ¸Ñ¥¹Ñ•‘MÁÉ¥Ñ”¡±…å%µ…”°½±½É5…Í¬°±…åQ¥¹Ñ…¡”¤ì(€ô((€™Õ¹Ñ¥½¸Ñ¥¹Ñ•‘±½¡½±½É5…Í¬¤ì(€€€É•ÑÕÉ¸Ñ¥¹Ñ•‘MÁÉ¥Ñ”¡±½‘%µ…”°½±½É5…Í¬°±½‘Q¥¹Ñ…¡”¤ì(€ô((€™Õ¹Ñ¥½¸Ñ¥¹Ñ•‘±•µ•¹ÑMÁÉ¥Ñ”¡¥°½±½É5…Í¬€ô€À¤ì(€€€½¹ÍĞÍÁÉ¥Ñ”€ô•±•µ•¹ÑMÁÉ¥Ñ•Ím¥‘tñğ(€€€€€€¡l‰±•™Ğµ¡…¹ˆ°€‰É¥¡Ğµ¡…¹‰t¹¥¹±Õ‘•Ì¡¥¤€ü•±•µ•¹ÑMÁÉ¥Ñ•Ì¹¡…¹€è¹Õ±°¤ñğ(€€€€€€¡l‰±•™Ğµ™¥ÍĞˆ°€‰É¥¡Ğµ™¥ÍĞ‰t¹¥¹±Õ‘•Ì¡¥¤€ü•±•µ•¹ÑMÁÉ¥Ñ•Ì¹™¥ÍĞ€è¹Õ±°¤ì(€€€¥˜€ …ÍÁÉ¥Ñ”¤É•ÑÕÉ¸Ñ¥¹Ñ•‘±…ä¡½±½É5…Í¬¤ì(€€€½¹ÍĞ­•ä€ô€‘í¥‘ôè‘í½±½É5…Í­õ€ì(€€€¥˜€¡•±•µ•¹ÑQ¥¹Ñ…¡”¹¡…Ì¡­•ä¤¤É•ÑÕÉ¸•±•µ•¹ÑQ¥¹Ñ…¡”¹•Ğ¡­•ä¤ì(€€€½¹ÍĞÑ¥¹Ñ•€ôÑ¥¹Ñ•‘MÁÉ¥Ñ”¡ÍÁÉ¥Ñ”°½±½É5…Í¬°¹•Ü5…À ¤¤ì(€€€½¹ÍĞÑÉ…¹Í™½É´€ô•±•µ•¹ÑMÁÉ¥Ñ•QÉ…¹Í™½É´¡¥¤ì(€€€¥˜€ …ÑÉ…¹Í™½É´¤ì(€€€€€•±•µ•¹ÑQ¥¹Ñ…¡”¹Í•Ğ¡­•ä°Ñ¥¹Ñ•¤ì(€€€€€É•ÑÕÉ¸Ñ¥¹Ñ•ì(€€€ô((€€€½¹ÍĞ½É¥•¹Ñ•€ô‘½Õµ•¹Ğ¹É•…Ñ•±•µ•¹Ğ ‰…¹Ù…Ìˆ¤ì(€€€½É¥•¹Ñ•¹İ¥‘Ñ €ôÑ¥¹Ñ•¹İ¥‘Ñ ì(€€€½É¥•¹Ñ•¹¡•¥¡Ğ€ôÑ¥¹Ñ•¹¡•¥¡Ğì(€€€½¹ÍĞ½É¥•¹Ñ•‘½¹Ñ•áĞ€ô½É¥•¹Ñ•¹•Ñ½¹Ñ•áĞ ˆÉˆ¤ì(€€€½É¥•¹Ñ•‘½¹Ñ•áĞ¹Í…Ù” ¤ì(€€€½É¥•¹Ñ•‘½¹Ñ•áĞ¹ÑÉ…¹Í±…Ñ”¡½É¥•¹Ñ•¹İ¥‘Ñ €¼€È°½É¥•¹Ñ•¹¡•¥¡Ğ€¼€È¤ì(€€€¥˜€¡ÑÉ…¹Í™½É´¹µ¥ÉÉ½É`ñğÑÉ…¹Í™½É´¹µ¥ÉÉ½Éd¤ì(€€€€€½É¥•¹Ñ•‘½¹Ñ•áĞ¹Í…±”¡ÑÉ…¹Í™½É´¹µ¥ÉÉ½É`€ü€´Ä€è€Ä°ÑÉ…¹Í™½É´¹µ¥ÉÉ½Éd€ü€´Ä€è€Ä¤ì(€€€ô(€€€¥˜€¡ÑÉ…¹Í™½É´¹É½Ñ…Ñ¥½¸¤½É¥•¹Ñ•‘½¹Ñ•áĞ¹É½Ñ…Ñ”¡ÑÉ…¹Í™½É´¹É½Ñ…Ñ¥½¸¤ì(€€€½É¥•¹Ñ•‘½¹Ñ•áĞ¹‘É…İ%µ…”¡Ñ¥¹Ñ•°€µÑ¥¹Ñ•¹İ¥‘Ñ €¼€È°€µÑ¥¹Ñ•¹¡•¥¡Ğ€¼€È¤ì(€€€½É¥•¹Ñ•‘½¹Ñ•áĞ¹É•ÍÑ½É” ¤ì(€€€•±•µ•¹ÑQ¥¹Ñ…¡”¹Í•Ğ¡­•ä°½É¥•¹Ñ•¤ì(€€€É•ÑÕÉ¸½É¥•¹Ñ•ì(€ô((€™Õ¹Ñ¥½¸•±•µ•¹ÑMÁÉ¥Ñ•QÉ…¹Í™½É´¡¥¤ì(€€€€¼¼Q¡”ÍÕÁÁ±¥•¡…¹½™¥ÍĞ…ÉĞ™…•Ì±•™Ğ¸-••ÀÑ¡”•áÁ±¥¥Ğ±•™Ğ™½ÉµÌ(€€€€¼¼Õ¹¡…¹•°İ¡¥±”Ñ¡”Õ¹Í¥‘•½‘•™…Õ±Ğ…¹É¥¡Ğ™½ÉµÌ™…”É¥¡Ğ¸(€€€¥˜€¡l‰¡…¹ˆ°€‰É¥¡Ğµ¡…¹ˆ°€‰™¥ÍĞˆ°€‰É¥¡Ğµ™¥ÍĞ‰t¹¥¹±Õ‘•Ì¡¥¤¤ì(€€€€€É•ÑÕÉ¸ìµ¥ÉÉ½É`èÑÉÕ”°µ¥ÉÉ½Édè™…±Í”°É½Ñ…Ñ¥½¸è€Àôì(€€€ô(€€€€¼¼Q¡”ÍÕÁÁ±¥•…ÉÉ½Ü™…•ÌÉ¥¡Ğ¸5¥ÉÉ½ÈÑ½ÀµÑ¼µ‰½ÑÑ½´…Ìİ•±°…ÌÑÕÉ¹¥¹œ(€€€€¼¼±•™ĞÍ¼Ñ¡”±¥¡Ğ½Í¡…‘½Ü•‘•ÌÍÑ…ä½¹Í¥ÍÑ•¹Ğİ¥Ñ Ñ¡”½Ñ¡•È‘¥É•Ñ¥½¹Ì¸(€€€¥˜€¡¥€ôôô€‰±•™Ğˆ¤É•ÑÕÉ¸ìµ¥ÉÉ½É`è™…±Í”°µ¥ÉÉ½ÉdèÑÉÕ”°É½Ñ…Ñ¥½¸è5…Ñ ¹A$ôì(€€€¥˜€¡¥€ôôô€‰ÕÀˆ¤É•ÑÕÉ¸ìµ¥ÉÉ½É`è™…±Í”°µ¥ÉÉ½Édè™…±Í”°É½Ñ…Ñ¥½¸è€µ5…Ñ ¹A$€¼€Èôì(€€€€¼¼=]8¥ÌÑ¡”Ù•ÉÑ¥…°µ¥ÉÉ½È½˜Ñ¡”ÕÁİ…É…ÉÉ½Ü¸(€€€¥˜€¡¥€ôôô€‰‘½İ¸ˆ¤É•ÑÕÉ¸ìµ¥ÉÉ½É`è™…±Í”°µ¥ÉÉ½ÉdèÑÉÕ”°É½Ñ…Ñ¥½¸è€µ5…Ñ ¹A$€¼€Èôì(€€€É•ÑÕÉ¸¹Õ±°ì(€ô((€™Õ¹Ñ¥½¸Ñ¥¹Ñ•‘5¥¹¥½±•´¡½±½É5…Í¬¤ì(€€€¥˜€¡µ¥¹¥½±•µQ¥¹Ñ…¡”¹¡…Ì¡½±½É5…Í¬¤¤É•ÑÕÉ¸µ¥¹¥½±•µQ¥¹Ñ…¡”¹•Ğ¡½±½É5…Í¬¤ì(€€€½¹ÍĞÑ¥¹Ğ€ôì(€€€€€€Äè€‰Éˆ ÄäÀ€ÔÔ€Ğà€¼€ÈÔ”¤ˆ°(€€€€€€Èè€‰Éˆ Øà€ÄĞÌ€ÜÌ€¼€ÈÔ”¤ˆ°(€€€€€€Ìè€‰Éˆ ÈÈÈ€ÄäÈ€ÔÔ€¼€ÈÔ”¤ˆ°(€€€€€€Ğè€‰Éˆ ØÔ€ÄÄÈ€ÄäÌ€¼€ÈÔ”¤ˆ°(€€€€€€Ôè€‰Éˆ ÄäØ€ØÜ€ÄÔÜ€¼€ÈÔ”¤ˆ°(€€€€€€Øè€‰Éˆ ØÄ€ÄàÌ€ÄàĞ€¼€ÈÔ”¤ˆ°(€€€€€€Üè€‰Éˆ ÈÌà€ÈÌä€ÈÈà€¼€ÌÈ”¤ˆ(€€€õm½±½É5…Í­tñğ€‰Éˆ Ğà€ÔÄ€ÔÜ€¼€ÔÀ”¤ˆì(€€€½¹ÍĞÍÁÉ¥Ñ”€ô‘½Õµ•¹Ğ¹É•…Ñ•±•µ•¹Ğ ‰…¹Ù…Ìˆ¤ì(€€€ÍÁÉ¥Ñ”¹İ¥‘Ñ €ôµ¥¹¥½±•µ%µ…”¹¹…ÑÕÉ…±]¥‘Ñ ñğ€ØĞì(€€€ÍÁÉ¥Ñ”¹¡•¥¡Ğ€ôµ¥¹¥½±•µ%µ…”¹¹…ÑÕÉ…±!•¥¡Ğñğ€ØĞì(€€€½¹ÍĞÍÁÉ¥Ñ•½¹Ñ•áĞ€ôÍÁÉ¥Ñ”¹•Ñ½¹Ñ•áĞ ˆÉˆ¤ì(€€€¥˜€¡µ¥¹¥½±•µ%µ…”¹½µÁ±•Ñ”€˜˜µ¥¹¥½±•µ%µ…”¹¹…ÑÕÉ…±]¥‘Ñ ¤ì(€€€€€ÍÁÉ¥Ñ•½¹Ñ•áĞ¹‘É…İ%µ…”¡µ¥¹¥½±•µ%µ…”°€À°€À°ÍÁÉ¥Ñ”¹İ¥‘Ñ °ÍÁÉ¥Ñ”¹¡•¥¡Ğ¤ì(€€€€€ÍÁÉ¥Ñ•½¹Ñ•áĞ¹±½‰…±½µÁ½Í¥Ñ•=Á•É…Ñ¥½¸€ô€‰Í½ÕÉ”µ…Ñ½Àˆì(€€€€€ÍÁÉ¥Ñ•½¹Ñ•áĞ¹™¥±±MÑå±”€ôÑ¥¹Ğì(€€€€€ÍÁÉ¥Ñ•½¹Ñ•áĞ¹™¥±±I•Ğ À°€À°ÍÁÉ¥Ñ”¹İ¥‘Ñ °ÍÁÉ¥Ñ”¹¡•¥¡Ğ¤ì(€€€ô(€€€µ¥¹¥½±•µQ¥¹Ñ…¡”¹Í•Ğ¡½±½É5…Í¬°ÍÁÉ¥Ñ”¤ì(€€€É•ÑÕÉ¸ÍÁÉ¥Ñ”ì(€ô((€™Õ¹Ñ¥½¸‘É…İ5…À ¤ì(€€€½¹ÍĞìİ¥‘Ñ °¡•¥¡Ğ°Í¥é”ô€ôÍÑ…Ñ”¹±…å½ÕĞì(€€€½¹Ñ•áĞ¹±•…ÉI•Ğ À°€À°İ¥‘Ñ °¡•¥¡Ğ¤ì(€€€¥˜€¡İ½É±‘%µ…”¹½µÁ±•Ñ”€˜˜İ½É±‘%µ…”¹¹…ÑÕÉ…±]¥‘Ñ ¤ì(€€€€€½¹ÍĞ™É…µ”€ô¥µ…•É…µ” ¤ì(€€€€€½¹Ñ•áĞ¹‘É…İ%µ…”¡İ½É±‘%µ…”°™É…µ”¹à°™É…µ”¹ä°™É…µ”¹İ¥‘Ñ °™É…µ”¹¡•¥¡Ğ¤ì(€€€ô•±Í”ì(€€€€€½¹Ñ•áĞ¹™¥±±MÑå±”€ô€ˆŒÈØÌÌÈàˆì(€€€€€½¹Ñ•áĞ¹™¥±±I•Ğ À°€À°İ¥‘Ñ °¡•¥¡Ğ¤ì(€€€ô(€€€‘É…İ…µ•!Õ ¤ì(€€€™½È€¡½¹ÍĞ‰±½¬½˜ÍÑ…Ñ”¹‰±½­Ì¤ì(€€€€€¥˜€¡‰±½¬¹Õ¹Á±…•¤½¹Ñ¥¹Õ”ì(€€€€€½¹ÍĞÍ•±•Ñ•€ô‰±½¬¹¥€ôôôÍÑ…Ñ”¹Í•±•Ñ•‘%ì(€€€€€½¹ÍĞ™½ÕÍ•€ô‰±½¬¹¥€ôôôÍÑ…Ñ”¹™½ÕÍ•‘%ì(€€€€€½¹ÍĞÑ…É•Ğ€ô‰±½¬¹¥€ôôôÍÑ…Ñ”¹Ñ…É•Ñ%ì(€€€€€½¹ÍĞµ•…¹¥¹œ€ô‘•ÍÉ¥‰”¡‰±½¬¹½¹Ñ•¹ÑÌ¤ì(€€€€€½¹ÍĞ¥ÍÉ•…ÑÕÉ”€ôl‰Í•¹Í”ˆ°€‰µ½Ñ¥Ù”ˆ°€‰½±•´‰t¹¥¹±Õ‘•Ì¡µ•…¹¥¹œ¹…Ñ•½Éä¤ì(€€€€€½¹ÍĞÍ¥¡Ñ%ÍQÉÕ”€ôÍ•¹Í½É½È¡‰±½¬¤€„ôô¹Õ±°€˜˜‰±½¬¹Í•¹Í•Ñ¥Ù”ì(€€€€€½¹ÍĞ½±½É5…Í¬€ôµ•…¹¥¹œ¹½±½É%¹Ñ•¹Ñ5…Í¬€üüµ•…¹¥¹œ¹½±½É5…Í¬€üü€Àì(€€€€€½¹ÍĞ¥Í±½‘1¥Ñ•É…°€ôµ•…¹¥¹œ¹¥€ôôô€‰±½ˆñğµ•…¹¥¹œ¹±½‘1¥Ñ•É…°€ôôôÑÉÕ”ñğµ•…¹¥¹œ¹½‰©•Ñ-¥¹€ôôô€‰±½ˆì(€€€€€½¹ÍĞ•±•µ•¹ÑMÁÉ¥Ñ”€ô•±•µ•¹ÑMÁÉ¥Ñ•Ímµ•…¹¥¹œ¹¥‘tì(€€€€€¥˜€¡Í¥¡Ñ%ÍQÉÕ”¤ì(€€€€€€€½¹ÍĞÉ•‘Õ•‘5½Ñ¥½¸€ôİ¥¹‘½Ü¹µ…Ñ¡5•‘¥„ü¸ ˆ¡ÁÉ•™•ÉÌµÉ•‘Õ•µµ½Ñ¥½¸èÉ•‘Õ”¤ˆ¤ü¹µ…Ñ¡•Ì€ôôôÑÉÕ”ì(€€€€€€€½¹ÍĞÁÕ±Í”€ôÉ•‘Õ•‘5½Ñ¥½¸€ü€Ä€è€À¸Ô€¬€¡5…Ñ ¹Í¥¸¡Á•É™½Éµ…¹”¹¹½Ü ¤€¼€ÈØÀ¤€¬€Ä¤€¨€À¸Äàì(€€€€€€€½¹ÍĞ•¹Ñ•É`€ô‰±½¬¹à€¬Í¥é”€¼€Èì(€€€€€€€½¹ÍĞ•¹Ñ•Éd€ô‰±½¬¹ä€¬Í¥é”€¼€Èì(€€€€€€€½¹ÍĞÉ…‘¥ÕÌ€ôÍ¥é”€¨€À¸äì(€€€€€€€½¹ÍĞ±½Ü€ô½¹Ñ•áĞ¹É•…Ñ•I…‘¥…±É…‘¥•¹Ğ¡•¹Ñ•É`°•¹Ñ•Éd°Í¥é”€¨€À¸ÄÈ°•¹Ñ•É`°•¹Ñ•Éd°É…‘¥ÕÌ¤ì(€€€€€€€±½Ü¹…‘‘½±½ÉMÑ½À À°Éˆ ÈÔÔ€ÈÈĞ€ÄÌÈ€¼€‘í5…Ñ ¹É½Õ¹¡ÁÕ±Í”€¨€ÜÈ¥ô”¥€¤ì(€€€€€€€±½Ü¹…‘‘½±½ÉMÑ½À À¸ÔÔ°Éˆ ÈÔÔ€ÈÄĞ€ÄÀÔ€¼€‘í5…Ñ ¹É½Õ¹¡ÁÕ±Í”€¨€Ìà¥ô”¥€¤ì(€€€€€€€±½Ü¹…‘‘½±½ÉMÑ½À Ä°€‰Éˆ ÈÔÔ€ÈÄĞ€ÄÀÔ€¼€À”¤ˆ¤ì(€€€€€€€½¹Ñ•áĞ¹Í…Ù” ¤ì(€€€€€€€½¹Ñ•áĞ¹™¥±±MÑå±”€ô±½Üì(€€€€€€€½¹Ñ•áĞ¹‰•¥¹A…Ñ  ¤ì(€€€€€€€½¹Ñ•áĞ¹…ÉŒ¡•¹Ñ•É`°•¹Ñ•Éd°É…‘¥ÕÌ°€À°5…Ñ ¹A$€¨€È¤ì(€€€€€€€½¹Ñ•áĞ¹™¥±° ¤ì(€€€€€€€½¹Ñ•áĞ¹É•ÍÑ½É” ¤ì(€€€€€ô(€€€€€¥˜€¡¥Í±½‘1¥Ñ•É…°€˜˜±½‘%µ…”¹½µÁ±•Ñ”€˜˜±½‘%µ…”¹¹…ÑÕÉ…±]¥‘Ñ ¤ì(€€€€€€€½¹Ñ•áĞ¹‘É…İ%µ…”¡Ñ¥¹Ñ•‘±½¡½±½É5…Í¬¤°‰±½¬¹à°‰±½¬¹ä°Í¥é”°Í¥é”¤ì(€€€€€ô•±Í”¥˜€¡•±•µ•¹ÑMÁÉ¥Ñ”ü¹½µÁ±•Ñ”€˜˜•±•µ•¹ÑMÁÉ¥Ñ”¹¹…ÑÕÉ…±]¥‘Ñ ¤ì(€€€€€€€½¹ÍĞ…ÉĞ€ôÑ¥¹Ñ•‘±•µ•¹ÑMÁÉ¥Ñ”¡µ•…¹¥¹œ¹¥°½±½É5…Í¬¤ì(€€€€€€€½¹Ñ•áĞ¹‘É…İ%µ…”¡…ÉĞ°‰±½¬¹à°‰±½¬¹ä°Í¥é”°Í¥é”¤ì(€€€€€ô•±Í”¥˜€¡¥ÍÉ•…ÑÕÉ”€˜˜µ¥¹¥½±•µ%µ…”¹½µÁ±•Ñ”€˜˜µ¥¹¥½±•µ%µ…”¹¹…ÑÕÉ…±]¥‘Ñ ¤ì(€€€€€€€½¹Ñ•áĞ¹Í…Ù” ¤ì(€€€€€€€€¼¼Q¡”‰É¥¡Ñ•È™…”…¹É¥ÍÀ‘…É¬™•…ÑÕÉ•ÌÉ•………¥¹ÍĞ‰½Ñ Ñ¡”±…ä(€€€€€€€€¼¼ÍÅÕ…É”…¹Ñ¡”™½É•ÍĞìÑ¡”Í½™ĞÉ¥´Í•Á…É…Ñ•ÌÑ¡”Íµ…±°±¥µ‰ÌÑ½¼¸(€€€€€€€½¹Ñ•áĞ¹™¥±Ñ•È€ô€‰‰É¥¡Ñ¹•ÍÌ Ä¸ÄÈ¤½¹ÑÉ…ÍĞ Ä¸Ô¤ˆì(€€€€€€€½¹Ñ•áĞ¹Í¡…‘½İ½±½È€ô€‰Éˆ ÈÔÔ€ÈÌÔ€ÄàÔ€¼€äÈ”¤ˆì(€€€€€€€½¹Ñ•áĞ¹Í¡…‘½İ	±ÕÈ€ô5…Ñ ¹µ…à Ä¸Ô°Í¥é”€¨€À¸ÀÌÔ¤ì(€€€€€€€½¹Ñ•áĞ¹‘É…İ%µ…”¡Ñ¥¹Ñ•‘5¥¹¥½±•´¡½±½É5…Í¬¤°‰±½¬¹à°‰±½¬¹ä°Í¥é”°Í¥é”¤ì(€€€€€€€½¹Ñ•áĞ¹É•ÍÑ½É” ¤ì(€€€€€ô•±Í”¥˜€¡±…å%µ…”¹½µÁ±•Ñ”€˜˜±…å%µ…”¹¹…ÑÕÉ…±]¥‘Ñ ¤ì(€€€€€€€½¹Ñ•áĞ¹‘É…İ%µ…”¡Ñ¥¹Ñ•‘±…ä¡µ•…¹¥¹œ¹½±½É5…Í¬¤°‰±½¬¹à°‰±½¬¹ä°Í¥é”°Í¥é”¤ì(€€€€€ô•±Í”ì(€€€€€€€½¹Ñ•áĞ¹™¥±±MÑå±”€ô€ˆ……„İ„Àˆì(€€€€€€€½¹Ñ•áĞ¹™¥±±I•Ğ¡‰±½¬¹à°‰±½¬¹ä°Í¥é”°Í¥é”¤ì(€€€€€ô(€€€€€‘É…İ!•±‘%Ñ•µÌ¡‰±½¬°Í¥é”¤ì(€€€€€¥˜€¡l‰‘¼µµ½Ù”µ±•™Ğˆ°€‰‘¼µµ½Ù”µÉ¥¡Ğˆ°€‰‘¼µµ½Ù”µÕÀˆ°€‰‘¼µµ½Ù”µ‘½İ¸ˆ°€‰‘¼µµ½Ù”µÉ…¹‘½´‰t¹¥¹±Õ‘•Ì¡µ•…¹¥¹œ¹¥¤¤ì(€€€€€€€½¹Ñ•áĞ¹ÍÑÉ½­•MÑå±”€ô€ˆÑ”É„Ğˆì(€€€€€€€½¹Ñ•áĞ¹±¥¹•]¥‘Ñ €ô€Èì(€€€€€€€½¹Ñ•áĞ¹Í•Ñ1¥¹•…Í ¡lĞ°€Ít¤ì(€€€€€€€½¹Ñ•áĞ¹ÍÑÉ½­•I•Ğ¡‰±½¬¹à€¬€È°‰±½¬¹ä€¬€È°Í¥é”€´€Ğ°Í¥é”€´€Ğ¤ì(€€€€€€€½¹Ñ•áĞ¹Í•Ñ1¥¹•…Í ¡mt¤ì(€€€€€ô(€€€€€¥˜€¡Ñ…É•ĞñğÍ•±•Ñ•ñğ™½ÕÍ•¤ì(€€€€€€€½¹Ñ•áĞ¹ÍÑÉ½­•MÑå±”€ôÍ•±•Ñ•€ü€ˆ˜ÑŒÈİ„ˆ€èÑ…É•Ğ€ü€ˆ™™”Äå„ˆ€è€ˆ”á‘™Œäˆì(€€€€€€€½¹Ñ•áĞ¹±¥¹•]¥‘Ñ €ôÍ•±•Ñ•ñğÑ…É•Ğ€ü€Ì€è€Èì(€€€€€€€½¹Ñ•áĞ¹ÍÑÉ½­•I•Ğ¡‰±½¬¹à€¬€Ä°‰±½¬¹ä€¬€Ä°Í¥é”€´€È°Í¥é”€´€È¤ì(€€€€€ô(€€€€€½¹ÍĞ±…‰•±d€ô‰±½¬¹ä€¬Í¥é”€¨€¡¥ÍÉ•…ÑÕÉ”€ü€À¸ĞÈ€è€À¸Ô¤ì(€€€€€‘É…İ…•1…‰•°¡½¹Ñ•áĞ°‰±½¬¹½¹Ñ•¹ÑÌ°‰±½¬¹à€¬Í¥é”€¼€È°±…‰•±d°Í¥é”¤ì(€€€ô(€ô((€™Õ¹Ñ¥½¸‘É…İ!•±‘%Ñ•µÌ¡‰±½¬°Í¥é”¤ì(€€€½¹ÍĞ¡•±‘%Ñ•µÌ€ô‰±½¬¹¡•±‘%Ñ•µÌì(€€€¥˜€ …¡•±‘%Ñ•µÌñğ€ …¡•±‘%Ñ•µÌ¹±•™Ğ€˜˜€…¡•±‘%Ñ•µÌ¹É¥¡Ğ¤¤É•ÑÕÉ¸ì(€€€™½È€¡½¹ÍĞÍ¥‘”½˜l‰±•™Ğˆ°€‰É¥¡Ğ‰t¤ì(€€€€€½¹ÍĞ¡•±‘±½€ô¡•±‘%Ñ•µÍmÍ¥‘•tì(€€€€€¥˜€ …¡•±‘±½¤½¹Ñ¥¹Õ”ì(€€€€€½¹ÍĞ½¹Ñ•¹ÑÌ€ô¡•±‘±½¹½¹Ñ•¹ÑÌì(€€€€€½¹ÍĞµ•…¹¥¹œ€ô‘•ÍÉ¥‰”¡½¹Ñ•¹ÑÌ¤ì(€€€€€½¹ÍĞÍÁÉ¥Ñ”€ô•±•µ•¹ÑMÁÉ¥Ñ•Ímµ•…¹¥¹œ¹¥‘tì(€€€€€½¹ÍĞ½±½É5…Í¬€ôµ•…¹¥¹œ¹½±½É%¹Ñ•¹Ñ5…Í¬€üüµ•…¹¥¹œ¹½±½É5…Í¬€üü€Àì(€€€€€½¹ÍĞ¥Í±½‘1¥Ñ•É…°€ôµ•…¹¥¹œ¹¥€ôôô€‰±½ˆñğµ•…¹¥¹œ¹±½‘1¥Ñ•É…°€ôôôÑÉÕ”ñğµ•…¹¥¹œ¹½‰©•Ñ-¥¹€ôôô€‰±½ˆì(€€€€€€¼¼!•±±½‘ÌÍ¡½Õ±É•…±•…É±ä½Ù•ÈÑ¡”½±•´Ì¡…¹‘Ì¸Q¡”ÁÉ•Ù¥½ÕÌ(€€€€€€¼¼€ÌĞ”½Ù•É±…äİ…ÌÑ½¼Íµ…±°ì€ÔÄ”¥Ì„€ÔÀ”¥¹É•…Í”…¹ÍÑ…åÌİ¥Ñ¡¥¸Ñ¡”(€€€€€€¼¼½±•´Ñ¥±”İ¡•¸…¹¡½É•Ñ¼¥ÑÌ±½İ•È•‘”¸(€€€€€½¹ÍĞ¥Ñ•µM¥é”€ôÍ¥é”€¨€À¸ÔÄì(€€€€€½¹ÍĞà€ô‰±½¬¹à€¬€¡Í¥‘”€ôôô€‰±•™Ğˆ€üÍ¥é”€¨€À¸ÀÈ€èÍ¥é”€¨€À¸ĞÜ¤ì(€€€€€½¹ÍĞä€ô‰±½¬¹ä€¬Í¥é”€¨€À¸Ğàì(€€€€€½¹Ñ•áĞ¹Í…Ù” ¤ì(€€€€€½¹Ñ•áĞ¹±½‰…±±Á¡„€ô€À¸äØì(€€€€€¥˜€¡¥Í±½‘1¥Ñ•É…°€˜˜±½‘%µ…”¹½µÁ±•Ñ”€˜˜±½‘%µ…”¹¹…ÑÕÉ…±]¥‘Ñ ¤ì(€€€€€€€½¹Ñ•áĞ¹‘É…İ%µ…”¡Ñ¥¹Ñ•‘±½¡½±½É5…Í¬¤°à°ä°¥Ñ•µM¥é”°¥Ñ•µM¥é”¤ì(€€€€€ô•±Í”¥˜€¡ÍÁÉ¥Ñ”ü¹½µÁ±•Ñ”€˜˜ÍÁÉ¥Ñ”¹¹…ÑÕÉ…±]¥‘Ñ ¤ì(€€€€€€€½¹ÍĞ…ÉĞ€ôÑ¥¹Ñ•‘±•µ•¹ÑMÁÉ¥Ñ”¡µ•…¹¥¹œ¹¥°½±½É5…Í¬¤ì(€€€€€€€½¹Ñ•áĞ¹‘É…İ%µ…”¡…ÉĞ°à°ä°¥Ñ•µM¥é”°¥Ñ•µM¥é”¤ì(€€€€€ô•±Í”ì(€€€€€€€½¹ÍĞ…ÉĞ€ôÑ¥¹Ñ•‘±…ä¡½±½É5…Í¬¤ì(€€€€€€€½¹Ñ•áĞ¹‘É…İ%µ…”¡…ÉĞ°à°ä°¥Ñ•µM¥é”°¥Ñ•µM¥é”¤ì(€€€€€ô(€€€€€½¹ÍĞ±…‰•°€ô™…•1…‰•°¡½¹Ñ•¹ÑÌ¤ì(€€€€€½¹Ñ•áĞ¹™½¹Ğ€ô‰½±€‘í5…Ñ ¹µ…à Ø°¥Ñ•µM¥é”€¨€À¸ÌÄ¥õÁà€‰Ñ­¥¹Í½¸!åÁ•É±•¥‰±”9•áĞˆ°Í…¹ÌµÍ•É¥™€ì(€€€€€½¹Ñ•áĞ¹Ñ•áÑ±¥¸€ô€‰•¹Ñ•Èˆì(€€€€€½¹Ñ•áĞ¹Ñ•áÑ	…Í•±¥¹”€ô€‰µ¥‘‘±”ˆì(€€€€€½¹Ñ•áĞ¹±¥¹•]¥‘Ñ €ô€Èì(€€€€€½¹Ñ•áĞ¹ÍÑÉ½­•MÑå±”€ô€‰Éˆ Äà€Ää€ÈÄ€¼€äÔ”¤ˆì(€€€€€½¹Ñ•áĞ¹™¥±±MÑå±”€ô€ˆ™™˜İ”Üˆì(€€€€€½¹Ñ•áĞ¹ÍÑÉ½­•Q•áĞ¡±…‰•°°à€¬¥Ñ•µM¥é”€¼€È°ä€¬¥Ñ•µM¥é”€¨€À¸ÔÈ°¥Ñ•µM¥é”€´€È¤ì(€€€€€½¹Ñ•áĞ¹™¥±±Q•áĞ¡±…‰•°°à€¬¥Ñ•µM¥é”€¼€È°ä€¬¥Ñ•µM¥é”€¨€À¸ÔÈ°¥Ñ•µM¥é”€´€È¤ì(€€€€€½¹Ñ•áĞ¹É•ÍÑ½É” ¤ì(€€€ô(€ô((€™Õ¹Ñ¥½¸‘É…İ…µ•!Õ ¤ì(€€€½¹ÍĞ¡Õ€ô…µ•!Õ‘1…å½ÕĞ ¤ì(€€€½¹ÍĞìİ¥‘Ñ ô€ôÍÑ…Ñ”¹±…å½ÕĞì(€€€½¹Ñ•áĞ¹Í…Ù” ¤ì(€€€½¹Ñ•áĞ¹™¥±±MÑå±”€ô€‰Éˆ ÈÔ€ÌÀ€Èä€¼€ÜÈ”¤ˆì(€€€½¹Ñ•áĞ¹™¥±±I•Ğ À°€À°İ¥‘Ñ °¡Õ¹‰½Õ¹‘Ì¹‰½ÑÑ½´¤ì(€€€½¹Ñ•áĞ¹ÍÑÉ½­•MÑå±”€ôÍÑ…Ñ”¹‘É…œü¹½Ù•ÉQ½ÁA…¹•°(€€€€€€ü€‰Éˆ ÈĞØ€ÄàÜ€ÄÈÌ€¼€àà”¤ˆ(€€€€€€è€‰Éˆ ÄäÀ€ÄäÔ€ÄÜÀ€¼€ĞÈ”¤ˆì(€€€½¹Ñ•áĞ¹±¥¹•]¥‘Ñ €ôÍÑ…Ñ”¹‘É…œü¹½Ù•ÉQ½ÁA…¹•°€ü€È€è€Äì(€€€½¹Ñ•áĞ¹‰•¥¹A…Ñ  ¤ì(€€€½¹Ñ•áĞ¹µ½Ù•Q¼ À°¡Õ¹‰½Õ¹‘Ì¹‰½ÑÑ½´€´€À¸Ô¤ì(€€€½¹Ñ•áĞ¹±¥¹•Q¼¡İ¥‘Ñ °¡Õ¹‰½Õ¹‘Ì¹‰½ÑÑ½´€´€À¸Ô¤ì(€€€½¹Ñ•áĞ¹ÍÑÉ½­” ¤ì((€€€½¹ÍĞ…µ•Q¥Ñ±”€ô€‰59`5U58€´!½ÀQÔ9…„!…­…Ñ¡½¸ˆì(€€€½¹ÍĞÑ¥Ñ±•M¥é”€ô5…Ñ ¹µ…à ÄÈ°5…Ñ ¹µ¥¸ ÌĞ°¡Õ¹Í¥é”€¨€À¸ÔØ°€¡İ¥‘Ñ €´€Èà¤€¼€¡…µ•Q¥Ñ±”¹±•¹Ñ €¨€À¸ÔÈ¤¤¤ì(€€€½¹Ñ•áĞ¹Ñ•áÑ±¥¸€ô€‰±•™Ğˆì(€€€½¹Ñ•áĞ¹Ñ•áÑ	…Í•±¥¹”€ô€‰µ¥‘‘±”ˆì(€€€½¹Ñ•áĞ¹™½¹Ğ€ô€‘íÑ¥Ñ±•M¥é•õÁà€‰É••ÁÍÑ•Èˆ°•½É¥„°Í•É¥™€ì(€€€½¹Ñ•áĞ¹™¥±±MÑå±”€ô€ˆ™™˜É‘˜ˆì(€€€½¹Ñ•áĞ¹Í¡…‘½İ½±½È€ô€‰Éˆ À€À€À€¼€àÀ”¤ˆì(€€€½¹Ñ•áĞ¹Í¡…‘½İ	±ÕÈ€ô€Ìì(€€€½¹Ñ•áĞ¹™¥±±Q•áĞ¡…µ•Q¥Ñ±”°€ÄĞ°¡Õ¹¥¹Í•Ğ€¬¡Õ¹Ñ¥Ñ±•!•¥¡Ğ€¼€È°İ¥‘Ñ €´€Èà¤ì(€€€½¹Ñ•áĞ¹Í¡…‘½İ	±ÕÈ€ô€Àì((€€€™½È€¡½¹ÍĞÑ½­•¸½˜¡Õ¹Ñ½­•¹Ì¤ì(€€€€€½¹ÍĞ½¹Ñ•¹ÑÌ€ô•±•µ•¹Ğ¡Ñ½­•¸¹İ½É¤ì(€€€€€½¹ÍĞµ•…¹¥¹œ€ô‘•ÍÉ¥‰”¡½¹Ñ•¹ÑÌ¤ì(€€€€€½¹ÍĞÍÁÉ¥Ñ”€ô•±•µ•¹ÑMÁÉ¥Ñ•Ímµ•…¹¥¹œ¹¥‘tì(€€€€€½¹ÍĞ…ÉĞ€ôÍÁÉ¥Ñ”ü¹½µÁ±•Ñ”€˜˜ÍÁÉ¥Ñ”¹¹…ÑÕÉ…±]¥‘Ñ (€€€€€€€€üÑ¥¹Ñ•‘±•µ•¹ÑMÁÉ¥Ñ”¡µ•…¹¥¹œ¹¥°µ•…¹¥¹œ¹½±½É%¹Ñ•¹Ñ5…Í¬€üüµ•…¹¥¹œ¹½±½É5…Í¬€üü€À¤(€€€€€€€€èÑ¥¹Ñ•‘±…ä¡µ•…¹¥¹œ¹½±½É%¹Ñ•¹Ñ5…Í¬€üüµ•…¹¥¹œ¹½±½É5…Í¬€üü€À¤ì(€€€€€¥˜€¡…ÉĞ¹İ¥‘Ñ €˜˜…ÉĞ¹¡•¥¡Ğ¤½¹Ñ•áĞ¹‘É…İ%µ…”¡…ÉĞ°Ñ½­•¸¹±•™Ğ°Ñ½­•¸¹Ñ½À°¡Õ¹Í¥é”°¡Õ¹Í¥é”¤ì(€€€€€½¹Ñ•áĞ¹™¥±±MÑå±”€ô€ˆ™™˜İ”Üˆì(€€€€€½¹Ñ•áĞ¹ÍÑÉ½­•MÑå±”€ô€‰Éˆ Äà€Ää€ÈÄ€¼€äÈ”¤ˆì(€€€€€½¹Ñ•áĞ¹±¥¹•]¥‘Ñ €ô5…Ñ ¹µ…à Ä¸Ô°¡Õ¹Í¥é”€¨€À¸ÀĞ¤ì(€€€€€½¹Ñ•áĞ¹Ñ•áÑ±¥¸€ô€‰•¹Ñ•Èˆì(€€€€€½¹Ñ•áĞ¹Ñ•áÑ	…Í•±¥¹”€ô€‰µ¥‘‘±”ˆì(€€€€€½¹Ñ•áĞ¹™½¹Ğ€ô€‘í™…•½¹ÑM¥é”¡™…•1…‰•°¡½¹Ñ•¹ÑÌ¤°¡Õ¹Í¥é”¥õÁà€‰É••ÁÍÑ•Èˆ°•½É¥„°Í•É¥™€ì(€€€€€½¹Ñ•áĞ¹Í¡…‘½İ½±½È€ô€‰Éˆ ÈÔÔ€ÈĞÜ€ÈÈĞ€¼€Üà”¤ˆì(€€€€€½¹Ñ•áĞ¹Í¡…‘½İ	±ÕÈ€ô€Èì(€€€€€½¹ÍĞ•¹Ñ•É`€ô€¡Ñ½­•¸¹±•™Ğ€¬Ñ½­•¸¹É¥¡Ğ¤€¼€Èì(€€€€€½¹ÍĞ•¹Ñ•Éd€ô€¡Ñ½­•¸¹Ñ½À€¬Ñ½­•¸¹‰½ÑÑ½´¤€¼€Èì(€€€€€½¹Ñ•áĞ¹ÍÑÉ½­•Q•áĞ¡™…•1…‰•°¡½¹Ñ•¹ÑÌ¤°•¹Ñ•É`°•¹Ñ•Éd°¡Õ¹Í¥é”€´€à¤ì(€€€€€½¹Ñ•áĞ¹™¥±±Q•áĞ¡™…•1…‰•°¡½¹Ñ•¹ÑÌ¤°•¹Ñ•É`°•¹Ñ•Éd°¡Õ¹Í¥é”€´€à¤ì(€€€€€½¹Ñ•áĞ¹Í¡…‘½İ	±ÕÈ€ô€Àì(€€€ô((€€€¥˜€¡Á…±•ÑÑ•A½¥¹Ñ•ÉÉ…œü¹µ½Ù•¤ì(€€€€€½¹ÍĞ‘É…œ€ôÁ…±•ÑÑ•A½¥¹Ñ•ÉÉ…œì(€€€€€½¹ÍĞ±•™Ğ€ô‘É…œ¹Á½¥¹Ğ¹à€´‘É…œ¹½™™Í•Ñ`ì(€€€€€½¹ÍĞÑ½À€ô‘É…œ¹Á½¥¹Ğ¹ä€´‘É…œ¹½™™Í•Ñdì(€€€€€½¹ÍĞµ•…¹¥¹œ€ô‘•ÍÉ¥‰”¡•±•µ•¹Ğ¡‘É…œ¹İ½É¤¤ì(€€€€€½¹ÍĞÍÁÉ¥Ñ”€ô•±•µ•¹ÑMÁÉ¥Ñ•Ímµ•…¹¥¹œ¹¥‘tì(€€€€€½¹ÍĞ…ÉĞ€ôÍÁÉ¥Ñ”ü¹½µÁ±•Ñ”€˜˜ÍÁÉ¥Ñ”¹¹…ÑÕÉ…±]¥‘Ñ (€€€€€€€€üÑ¥¹Ñ•‘±•µ•¹ÑMÁÉ¥Ñ”¡µ•…¹¥¹œ¹¥°µ•…¹¥¹œ¹½±½É%¹Ñ•¹Ñ5…Í¬€üüµ•…¹¥¹œ¹½±½É5…Í¬€üü€À¤(€€€€€€€€èÑ¥¹Ñ•‘±…ä¡µ•…¹¥¹œ¹½±½É%¹Ñ•¹Ñ5…Í¬€üüµ•…¹¥¹œ¹½±½É5…Í¬€üü€À¤ì(€€€€€½¹Ñ•áĞ¹±½‰…±±Á¡„€ô€À¸àØì(€€€€€¥˜€¡…ÉĞ¹İ¥‘Ñ €˜˜…ÉĞ¹¡•¥¡Ğ¤½¹Ñ•áĞ¹‘É…İ%µ…”¡…ÉĞ°±•™Ğ°Ñ½À°¡Õ¹Í¥é”°¡Õ¹Í¥é”¤ì(€€€€€½¹Ñ•áĞ¹™¥±±MÑå±”€ô€ˆ™™˜İ”Üˆì(€€€€€½¹Ñ•áĞ¹ÍÑÉ½­•MÑå±”€ô€‰Éˆ Äà€Ää€ÈÄ€¼€äÈ”¤ˆì(€€€€€½¹Ñ•áĞ¹±¥¹•]¥‘Ñ €ô€Èì(€€€€€½¹Ñ•áĞ¹Ñ•áÑ±¥¸€ô€‰•¹Ñ•Èˆì(€€€€€½¹Ñ•áĞ¹Ñ•áÑ	…Í•±¥¹”€ô€‰µ¥‘‘±”ˆì(€€€€€½¹Ñ•áĞ¹™½¹Ğ€ô€‘í™…•½¹ÑM¥é”¡™…•1…‰•°¡•±•µ•¹Ğ¡‘É…œ¹İ½É¤¤°¡Õ¹Í¥é”¥õÁà€‰É••ÁÍÑ•Èˆ°•½É¥„°Í•É¥™€ì(€€€€€½¹ÍĞ±…‰•°€ô™…•1…‰•°¡•±•µ•¹Ğ¡‘É…œ¹İ½É¤¤ì(€€€€€½¹Ñ•áĞ¹ÍÑÉ½­•Q•áĞ¡±…‰•°°±•™Ğ€¬¡Õ¹Í¥é”€¼€È°Ñ½À€¬¡Õ¹Í¥é”€¼€È°¡Õ¹Í¥é”€´€à¤ì(€€€€€½¹Ñ•áĞ¹™¥±±Q•áĞ¡±…‰•°°±•™Ğ€¬¡Õ¹Í¥é”€¼€È°Ñ½À€¬¡Õ¹Í¥é”€¼€È°¡Õ¹Í¥é”€´€à¤ì(€€€ô(€€€½¹Ñ•áĞ¹É•ÍÑ½É” ¤ì(€ô((€™Õ¹Ñ¥½¸™…•½¹ÑM¥é”¡±…‰•°°Í¥é”¤ì(€€€É•ÑÕÉ¸5…Ñ ¹µ…à ä°5…Ñ ¹µ¥¸ ÈÀ°Í¥é”€¨€À¸ÌĞ€´5…Ñ ¹µ…à À°±…‰•°¹±•¹Ñ €´€Ü¤€¨€À¸Ğà¤¤ì(€ô((€™Õ¹Ñ¥½¸‘É…İ…•1…‰•°¡Ñ…É•Ñ½¹Ñ•áĞ°•áÁÉ•ÍÍ¥½¸°•¹Ñ•É`°•¹Ñ•Éd°Í¥é”¤ì(€€€½¹ÍĞµ•…¹¥¹œ€ô‘•ÍÉ¥‰”¡•áÁÉ•ÍÍ¥½¸¤ì(€€€½¹ÍĞÁ…Ñ¡İ…åÌ€ôÁ…Ñ¡İ…åÍ½É5•…¹¥¹œ¡µ•…¹¥¹œ¤ì(€€€½¹ÍĞ±¥¹•Ì€ôµ•…¹¥¹œ¹¥€ôôô€‰½µÁ½Õ¹µ½±•´ˆ€˜˜Á…Ñ¡İ…åÌ¹±•¹Ñ €ø€Ä(€€€€€€üÁ…Ñ¡İ…åÌ¹™±…Ñ5…À¡Á…Ñ¡İ…ä€ôøl(€€€€€€€€€Á…Ñ¡İ…ä¹Í•¹Í”¹±…‰•°¹Ñ½1½İ•É…Í” ¤°(€€€€€€€€€Ñ¡•¸€‘íÁ…Ñ¡İ…ä¹µ½Ñ¥Ù”¹±…‰•°¹Ñ½1½İ•É…Í” ¥õ€(€€€€€€€t¤(€€€€€€èm™…•1…‰•°¡•áÁÉ•ÍÍ¥½¸¥tì(€€€½¹ÍĞµ…á]¥‘Ñ €ôÍ¥é”€´€àì(€€€½¹ÍĞµ…á!•¥¡Ğ€ôÍ¥é”€´€Øì(€€€½¹ÍĞ±¥¹•!•¥¡Ğ€ôµ…á!•¥¡Ğ€¼±¥¹•Ì¹±•¹Ñ ì(€€€½¹ÍĞ±½¹•ÍÑ1¥¹”€ô5…Ñ ¹µ…à ¸¸¹±¥¹•Ì¹µ…À¡±¥¹”€ôø±¥¹”¹±•¹Ñ ¤¤ì(€€€½¹ÍĞ™½¹ÑM¥é”€ô±¥¹•Ì¹±•¹Ñ €ø€Ä(€€€€€€ü5…Ñ ¹µ…à Ì°5…Ñ ¹µ¥¸ ÈÀ°Í¥é”€¨€À¸ÈĞ°±¥¹•!•¥¡Ğ€¨€À¸ÜØ°µ…á]¥‘Ñ €¼€¡±½¹•ÍÑ1¥¹”€¨€À¸ÔØ¤¤¤(€€€€€€è™…•½¹ÑM¥é”¡±¥¹•ÍlÁt°Í¥é”¤ì(€€€½¹ÍĞ‰±½­!•¥¡Ğ€ô±¥¹•!•¥¡Ğ€¨±¥¹•Ì¹±•¹Ñ ì(€€€½¹ÍĞ™¥ÉÍÑd€ô•¹Ñ•Éd€´‰±½­!•¥¡Ğ€¼€È€¬±¥¹•!•¥¡Ğ€¼€Èì((€€€Ñ…É•Ñ½¹Ñ•áĞ¹™¥±±MÑå±”€ô€ˆ™™˜İ”Üˆì(€€€Ñ…É•Ñ½¹Ñ•áĞ¹ÍÑÉ½­•MÑå±”€ô€‰Éˆ Äà€Ää€ÈÄ€¼€äÈ”¤ˆì(€€€Ñ…É•Ñ½¹Ñ•áĞ¹±¥¹•]¥‘Ñ €ô5…Ñ ¹µ¥¸ È¸Ğ°™½¹ÑM¥é”€¨€À¸È¤ì(€€€Ñ…É•Ñ½¹Ñ•áĞ¹Ñ•áÑ±¥¸€ô€‰•¹Ñ•Èˆì(€€€Ñ…É•Ñ½¹Ñ•áĞ¹Ñ•áÑ	…Í•±¥¹”€ô€‰µ¥‘‘±”ˆì(€€€Ñ…É•Ñ½¹Ñ•áĞ¹™½¹Ğ€ô€‘í™½¹ÑM¥é•õÁà€‰É••ÁÍÑ•Èˆ°•½É¥„°Í•É¥™€ì(€€€Ñ…É•Ñ½¹Ñ•áĞ¹Í¡…‘½İ½±½È€ô€‰Éˆ ÈÔÔ€ÈĞÜ€ÈÈĞ€¼€äÀ”¤ˆì(€€€Ñ…É•Ñ½¹Ñ•áĞ¹Í¡…‘½İ	±ÕÈ€ô€Èì(€€€±¥¹•Ì¹™½É…  ¡±¥¹”°¥¹‘•à¤€ôøì(€€€€€½¹ÍĞä€ô±¥¹•Ì¹±•¹Ñ €ø€Ä€ü™¥ÉÍÑd€¬¥¹‘•à€¨±¥¹•!•¥¡Ğ€è•¹Ñ•Édì(€€€€€Ñ…É•Ñ½¹Ñ•áĞ¹ÍÑÉ½­•Q•áĞ¡±¥¹”°•¹Ñ•É`°ä°µ…á]¥‘Ñ ¤ì(€€€€€Ñ…É•Ñ½¹Ñ•áĞ¹™¥±±Q•áĞ¡±¥¹”°•¹Ñ•É`°ä°µ…á]¥‘Ñ ¤ì(€€€ô¤ì(€€€Ñ…É•Ñ½¹Ñ•áĞ¹Í¡…‘½İ	±ÕÈ€ô€Àì(€ô((€™Õ¹Ñ¥½¸É•¹‘•É•Ñ…¥° ¤ì(€€€½¹ÍĞÍ•±•Ñ•€ô…±±	±½­Ì ¤¹™¥¹¡‰±½¬€ôø‰±½¬¹¥€ôôôÍÑ…Ñ”¹Í•±•Ñ•‘%¤ì(€€€¥˜€ …Í•±•Ñ•¤ì(€€€€€‘•Ñ…¥°¹¥¹¹•É!Q50€ô€œñÀ±…ÍÌô‰‘•Ñ…¥°µÁ±…•¡½±‘•Èˆù9¼±½Í•±•Ñ•¸ğ½Àøœì(€€€€€É•ÑÕÉ¸ì(€€€ô(€€€½¹ÍĞµ•…¹¥¹œ€ô‘•ÍÉ¥‰”¡Í•±•Ñ•¹½¹Ñ•¹ÑÌ¤ì(€€€½¹ÍĞÁÉ½Ù¥Í¥½¹…°€ôµ•…¹¥¹œ¹•ÉÑ…¥¹Ñä€ôôô€‰ÁÉ½Ù¥Í¥½¹…°ˆñğµ•…¹¥¹œ¹•ÉÑ…¥¹Ñä€ôôô€‰Õ¹É•Í½±Ù•ˆì(€€€½¹ÍĞÍ•¹Í½È€ôÍ•¹Í½É½È¡Í•±•Ñ•¤ì(€€€½¹ÍĞÁ…Ñ¡İ…åÌ€ôÁ…Ñ¡İ…åÍ½É5•…¹¥¹œ¡µ•…¹¥¹œ¤ì(€€€½¹ÍĞÍ¥¡ÑI…¹••±±Ì€ôµ•…¹¥¹œ¹Í¥¡ÑI…¹••±±Ìñğ€Ìì(€€€½¹ÍĞÍ•¹Í•-¥¹€ôÍ•¹Í½Èü¹Í•¹Í•-¥¹ñğ€¡Í•¹Í½Èü¹¥€ôôô€‰İ¡¥±”µ¡…¹ˆ€ü€‰Ñ½Õ ˆ€è€‰Í•”ˆ¤ì(€€€½¹ÍĞÁ½Í¥Ñ¥Ù•M•¹Í••ÍÉ¥ÁÑ¥½¸€ôÍ•¹Í½È€üÍ•¹Í•½¹‘¥Ñ¥½¹•ÍÉ¥ÁÑ¥½¸¡Í•¹Í½È¤€è±…äİ¥Ñ¡¥¸€‘íÍ¥¡ÑI…¹••±±Íô•±±Í€ì(€€€½¹ÍĞÍ•¹Í••ÍÉ¥ÁÑ¥½¸€ôÍ•¹Í½Èü¹¹•…Ñ•(€€€€€€ü¹¼€‘íÍ•¹Í•-¥¹€ôôô€‰Ñ½Õ ˆ€ü€‰½Ñ¡•È±…ä±½¥Ì…‘©…•¹Ğˆ€è±…ä¥Ìİ¥Ñ¡¥¸€‘íÍ¥¡ÑI…¹••±±Íô•±±Íõ€(€€€€€€èÁ½Í¥Ñ¥Ù•M•¹Í••ÍÉ¥ÁÑ¥½¸ì(€€€½¹ÍĞÍ¥¡ÑMÑ…ÑÕÌ€ôÍ•¹Í½È(€€€€€€üÍ•±•Ñ•¹Í•¹Í•Ñ¥Ù”(€€€€€€€€üM•¹Í¥¹œÑÉÕ”ƒ
+Ü€‘íÍ•¹Í••ÍÉ¥ÁÑ¥½¹õ€(€€€€€€€€èM•¹Í¥¹œ™…±Í”ƒ
+Ü€‘íÁ½Í¥Ñ¥Ù•M•¹Í••ÍÉ¥ÁÑ¥½¹õ€(€€€€€€è¹Õ±°ì(€€€½¹ÍĞµ½Ù•µ•¹ÑMÑ…ÑÕÍ•Ì€ôì(€€€€€€‰‘¼µµ½Ù”µ±•™Ğˆè€‰AÉ½Ñ½ÑåÁ”µ½Ù•µ•¹Ğ•áÁ•É¥µ•¹Ğƒ
+ÜÑ¡”±…¹Õ…”ÉÕ±”É•µ…¥¹Ì½Á•¸ˆ°(€€€€€€‰‘¼µµ½Ù”µÉ¥¡Ğˆè€‰AÉ½Ñ½ÑåÁ”µ½Ù•µ•¹Ğ•áÁ•É¥µ•¹Ğƒ
+ÜÑ¡”±…¹Õ…”ÉÕ±”É•µ…¥¹Ì½Á•¸ˆ°(€€€€€€‰‘¼µµ½Ù”µÕÀˆè€‰AÉ½Ñ½ÑåÁ”µ½Ù•µ•¹Ğ•áÁ•É¥µ•¹Ğƒ
+ÜÑ¡”±…¹Õ…”ÉÕ±”É•µ…¥¹Ì½Á•¸ˆ°(€€€€€€‰‘¼µµ½Ù”µ‘½İ¸ˆè€‰AÉ½Ñ½ÑåÁ”µ½Ù•µ•¹Ğ•áÁ•É¥µ•¹Ğƒ
+ÜÑ¡”±…¹Õ…”ÉÕ±”É•µ…¥¹Ì½Á•¸ˆ°(€€€€€€‰‘¼µµ½Ù”µÉ…¹‘½´ˆè€‰Q•¹Ñ…Ñ¥Ù”É…¹‘½´µİ…±¬•áÁ•É¥µ•¹Ğƒ
+ÜÑ¡”±…¹Õ…”ÉÕ±”É•µ…¥¹Ì½Á•¸ˆ(€€€ôì(€€€½¹ÍĞÁ…¥É•‘5½Ù•µ•¹ÑMÑ…ÑÕÌ€ôÁ…Ñ¡İ…åÌ¹±•¹Ñ (€€€€€€üÁ…Ñ¡İ…åÌ¹±•¹Ñ €ø€Ä(€€€€€€€€ü€‰… Í•¹Í”¥Ì¡•­•¥¹‘•Á•¹‘•¹Ñ±äì¥ÑÌÉ•ÍÁ½¹Í”ÉÕ¹Ìİ¡•¸ÑÉÕ”¸ˆ(€€€€€€€€èÍ•±•Ñ•¹Í•¹Í•Ñ¥Ù”(€€€€€€€€€€üAÉ½Ñ½ÑåÁ”É•ÍÁ½¹Í”…Ñ¥Ù”ƒ
+Ü€‘íÍ•¹Í••ÍÉ¥ÁÑ¥½¹õ€(€€€€€€€€€€èAÉ½Ñ½ÑåÁ”É•ÍÁ½¹Í”İ…¥Ñ¥¹œƒ
+Ü…ÑÌ½¹±äİ¡¥±”€‘íÍ•¹Í½Èü¹±…‰•°ü¹Ñ½1½İ•É…Í” ¤ñğ€‰Ñ¡”Í•¹Í”‰ô¥ÌÑÉÕ•€(€€€€€€è¹Õ±°ì(€€€½¹ÍĞÉ•…‘¥¹MÑ…ÑÕÌ€ôÁ…¥É•‘5½Ù•µ•¹ÑMÑ…ÑÕÌñğÍ¥¡ÑMÑ…ÑÕÌñğµ½Ù•µ•¹ÑMÑ…ÑÕÍ•Ímµ•…¹¥¹œ¹¥‘tñğ(€€€€€€¡ÁÉ½Ù¥Í¥½¹…°€ü€‰AÉ½Á½Í•É•…‘¥¹œƒ
+Ü‰•¡…Ù¥½È¹½ĞÍ¥µÕ±…Ñ•ˆ€è€‰±•µ•¹Ğˆ¤ì(€€€‘•Ñ…¥°¹¥¹¹•É!Q50€ô€ñ‘°±…ÍÌô‰‘•Ñ…¥°µ±¥ÍĞˆøñ‘¥Øøñ‘Ğù½¹ÍÑÉÕÑ¥½¸ğ½‘Ğøñ‘±…ÍÌô‰‘•Ñ…¥°µ½¹ÍÑÉÕÑ¥½¸ˆøğ½‘øğ½‘¥Øøñ‘¥Øøñ‘Ğù9…ÑÕÉ…°±…¹Õ…”ğ½‘Ğøñ‘±…ÍÌô‰‘•Ñ…¥°µÉ•…‘¥¹œˆøğ½‘øñÍµ…±°±…ÍÌô‰É•…‘¥¹œµÍÑ…ÑÕÌˆø‘íÉ•…‘¥¹MÑ…ÑÕÍôğ½Íµ…±°øğ½‘¥Øøğ½‘°ù€ì(€€€‘•Ñ…¥°¹ÅÕ•ÉåM•±•Ñ½È ˆ¹‘•Ñ…¥°µ½¹ÍÑÉÕÑ¥½¸ˆ¤¹Ñ•áÑ½¹Ñ•¹Ğ€ô½¹ÍÑÉÕÑ¥½¸¡Í•±•Ñ•¹½¹Ñ•¹ÑÌ¤ì(€€€‘•Ñ…¥°¹ÅÕ•ÉåM•±•Ñ½È ˆ¹‘•Ñ…¥°µÉ•…‘¥¹œˆ¤¹Ñ•áÑ½¹Ñ•¹Ğ€ôÁ±…¥¹1…¹Õ…”¡Í•±•Ñ•¹½¹Ñ•¹ÑÌ¤ì(€ô((€™Õ¹Ñ¥½¸Í•ÑMÑ…ÑÕÌ¡µ•ÍÍ…”¤ì(€€€ÍÑ…ÑÕÌ¹Ñ•áÑ½¹Ñ•¹Ğ€ôµ•ÍÍ…”ì(€ô((€™Õ¹Ñ¥½¸¡¥ÑQ•ÍĞ¡Á½¥¹Ğ°•á•ÁÑ%€ô¹Õ±°¤ì(€€€½¹ÍĞìÍ¥é”ô€ôÍÑ…Ñ”¹±…å½ÕĞì(€€€™½È€¡±•Ğ¤€ôÍÑ…Ñ”¹‰±½­Ì¹±•¹Ñ €´€Äì¤€øô€Àì¤€´ô€Ä¤ì(€€€€€½¹ÍĞ‰±½¬€ôÍÑ…Ñ”¹‰±½­Ím¥tì(€€€€€¥˜€¡‰±½¬¹Õ¹Á±…•¤½¹Ñ¥¹Õ”ì(€€€€€¥˜€¡‰±½¬¹¥€ôôô•á•ÁÑ%¤½¹Ñ¥¹Õ”ì(€€€€€¥˜€¡Á½¥¹Ğ¹à€øô‰±½¬¹à€˜˜Á½¥¹Ğ¹à€ğô‰±½¬¹à€¬Í¥é”€˜˜(€€€€€€€€€Á½¥¹Ğ¹ä€øô‰±½¬¹ä€˜˜Á½¥¹Ğ¹ä€ğô‰±½¬¹ä€¬Í¥é”¤É•ÑÕÉ¸‰±½¬ì(€€€ô(€€€É•ÑÕÉ¸¹Õ±°ì(€ô((€™Õ¹Ñ¥½¸Á½¥¹Ñ•É%Í=Ù•ÉQ½ÁA…¹•°¡±¥•¹Ñ`°±¥•¹Ñd¤ì(€€€½¹ÍĞÁ½¥¹Ğ€ô…¹Ù…ÍA½¥¹Ğ¡ì±¥•¹Ñ`°±¥•¹Ñdô¤ì(€€€É•ÑÕÉ¸Á½¥¹Ñ%¹Í¥‘•I•Ğ¡Á½¥¹Ğ¹à°Á½¥¹Ğ¹ä°…µ•!Õ‘1…å½ÕĞ ¤¹‰½Õ¹‘Ì¤ì(€ô((€™Õ¹Ñ¥½¸‘¥Í…É‘	±½¬¡‰±½¬¤ì(€€€ÍÑ…Ñ”¹‰±½­Ì€ôÍÑ…Ñ”¹‰±½­Ì¹™¥±Ñ•È¡…¹‘¥‘…Ñ”€ôø…¹‘¥‘…Ñ”¹¥€„ôô‰±½¬¹¥¤ì(€€€¥˜€¡ÍÑ…Ñ”¹Í•±•Ñ•‘%€ôôô‰±½¬¹¥¤ÍÑ…Ñ”¹Í•±•Ñ•‘%€ô¹Õ±°ì(€€€¥˜€¡ÍÑ…Ñ”¹™½ÕÍ•‘%€ôôô‰±½¬¹¥¤ÍÑ…Ñ”¹™½ÕÍ•‘%€ô¹Õ±°ì(€€€¥˜€¡ÍÑ…Ñ”¹Ñ…É•Ñ%€ôôô‰±½¬¹¥¤ÍÑ…Ñ”¹Ñ…É•Ñ%€ô¹Õ±°ì(€€€¥˜€ …ÍÑ…Ñ”¹‰±½­Ì¹Í½µ”¡¡…ÍÑ¥Ù•AÉ½Ñ½ÑåÁ•	•¡…Ù¥½È¤¤ÍÑ½ÁÑ¥Ù•5½Ù•µ•¹Ğ ¤ì(€€€É•¹‘•É•Ñ…¥° ¤ì(€€€‘É…İ5…À ¤ì(€€€Í•ÑMÑ…ÑÕÌ¡€‘í™…•1…‰•°¡‰±½¬¹½¹Ñ•¹ÑÌ¥ô‘¥Í…É‘•¹€¤ì(€ô((€™Õ¹Ñ¥½¸…¹Ù…ÍA½¥¹Ğ¡•Ù•¹Ğ¤ì(€€€½¹ÍĞÉ•Ğ€ô…¹Ù…Ì¹•Ñ	½Õ¹‘¥¹±¥•¹ÑI•Ğ ¤ì(€€€É•ÑÕÉ¸ì(€€€€€àè€¡•Ù•¹Ğ¹±¥•¹Ñ`€´É•Ğ¹±•™Ğ¤€¨€¡ÍÑ…Ñ”¹±…å½ÕĞ¹İ¥‘Ñ €¼É•Ğ¹İ¥‘Ñ ¤°(€€€€€äè€¡•Ù•¹Ğ¹±¥•¹Ñd€´É•Ğ¹Ñ½À¤€¨€¡ÍÑ…Ñ”¹±…å½ÕĞ¹¡•¥¡Ğ€¼É•Ğ¹¡•¥¡Ğ¤(€€€ôì(€ô((€™Õ¹Ñ¥½¸¥¹Í¥‘•±•…É¥¹œ¡à°ä°Í¥é”°™É…µ”¤ì(€€€½¹ÍĞ•¹Ñ•É`€ô€¡à€¬Í¥é”€¼€È€´™É…µ”¹à¤€¼™É…µ”¹İ¥‘Ñ ì(€€€½¹ÍĞ•¹Ñ•Éd€ô€¡ä€¬Í¥é”€¼€È€´™É…µ”¹ä¤€¼™É…µ”¹¡•¥¡Ğì(€€€É•ÑÕÉ¸Á½¥¹Ñ%¹A½±å½¸¡•¹Ñ•É`°•¹Ñ•Éd¤ì(€ô((€™Õ¹Ñ¥½¸½Ù•É±…ÁÍ¹½Ñ¡•É	±½¬¡‰±½¬°à°ä¤ì(€€€½¹ÍĞÍ¥é”€ôÍÑ…Ñ”¹±…å½ÕĞ¹Í¥é”ì(€€€É•ÑÕÉ¸ÍÑ…Ñ”¹‰±½­Ì¹Í½µ”¡½Ñ¡•È€ôø€…½Ñ¡•È¹Õ¹Á±…•€˜˜½Ñ¡•È¹¥€„ôô‰±½¬¹¥€˜˜(€€€€€à€ğ½Ñ¡•È¹à€¬Í¥é”€˜˜à€¬Í¥é”€ø½Ñ¡•È¹à€˜˜(€€€€€ä€ğ½Ñ¡•È¹ä€¬Í¥é”€˜˜ä€¬Í¥é”€ø½Ñ¡•È¹ä¤ì(€ô((€™Õ¹Ñ¥½¸‘É½Á%¹±•…É¥¹œ¡‰±½¬°‘•Í¥É•‘`°‘•Í¥É•‘d¤ì(€€€½¹ÍĞÍ¥é”€ôÍÑ…Ñ”¹±…å½ÕĞ¹Í¥é”ì(€€€½¹ÍĞµ…á`€ôÍÑ…Ñ”¹±…å½ÕĞ¹İ¥‘Ñ €´Í¥é”ì(€€€½¹ÍĞµ…ád€ôÍÑ…Ñ”¹±…å½ÕĞ¹¡•¥¡Ğ€´Í¥é”ì(€€€½¹ÍĞà€ô5…Ñ ¹µ…à À°5…Ñ ¹µ¥¸¡µ…á`°‘•Í¥É•‘`¤¤ì(€€€½¹ÍĞä€ô5…Ñ ¹µ…à À°5…Ñ ¹µ¥¸¡µ…ád°‘•Í¥É•‘d¤¤ì(€€€½¹ÍĞ™É…µ”€ô¥µ…•É…µ” ¤ì(€€€½¹ÍĞ…¹A±…”€ô€¡…¹‘¥‘…Ñ•`°…¹‘¥‘…Ñ•d¤€ôø(€€€€€¥¹Í¥‘•±•…É¥¹œ¡…¹‘¥‘…Ñ•`°…¹‘¥‘…Ñ•d°Í¥é”°™É…µ”¤€˜˜(€€€€€€…½Ù•É±…ÁÍ¹½Ñ¡•É	±½¬¡‰±½¬°…¹‘¥‘…Ñ•`°…¹‘¥‘…Ñ•d¤ì(€€€¥˜€¡…¹A±…”¡à°ä¤¤ì(€€€€€‰±½¬¹Õ¹Á±…•€ô™…±Í”ì(€€€€€‰±½¬¹à€ôàì(€€€€€‰±½¬¹ä€ôäì(€€€€€É•ÑÕÉ¸ÑÉÕ”ì(€€€ô((€€€€¼¼M•…É ½¹Ñ¥¹Õ½ÕÍ±ä…É½Õ¹Ñ¡”É•ÅÕ•ÍÑ•Á½¥¹Ğ°Ñ¡•¸…É½ÍÌÑ¡”É•ÍĞ½˜(€€€€¼¼Ñ¡”±•…É¥¹œ¸Q¡•É”¥Ì¹¼™¥á•±…ä½Õ¹Ğ½ÈÍ…™”µ•±°µÍ±½Ğ•¥±¥¹œ¸(€€€½¹ÍĞÍÑ•À€ô5…Ñ ¹µ…à È°5…Ñ ¹™±½½È¡Í¥é”€¼€ÄØ¤¤ì(€€€½¹ÍĞµ…áI…‘¥ÕÌ€ô5…Ñ ¹µ…à¡ÍÑ…Ñ”¹±…å½ÕĞ¹İ¥‘Ñ °ÍÑ…Ñ”¹±…å½ÕĞ¹¡•¥¡Ğ¤ì(€€€™½È€¡±•ĞÉ…‘¥ÕÌ€ôÍÑ•ÀìÉ…‘¥ÕÌ€ğôµ…áI…‘¥ÕÌìÉ…‘¥ÕÌ€¬ôÍÑ•À¤ì(€€€€€™½È€¡±•Ğ½™™Í•Ğ€ô€µÉ…‘¥ÕÌì½™™Í•Ğ€ğôÉ…‘¥ÕÌì½™™Í•Ğ€¬ôÍÑ•À¤ì(€€€€€€€½¹ÍĞ…¹‘¥‘…Ñ•Ì€ôl(€€€€€€€€€mà€¬½™™Í•Ğ°ä€´É…‘¥ÕÍt°mà€¬½™™Í•Ğ°ä€¬É…‘¥ÕÍt°(€€€€€€€€€mà€´É…‘¥ÕÌ°ä€¬½™™Í•Ñt°mà€¬É…‘¥ÕÌ°ä€¬½™™Í•Ñt(€€€€€€€tì(€€€€€€€™½È€¡½¹ÍĞm…¹‘¥‘…Ñ•`°…¹‘¥‘…Ñ•et½˜…¹‘¥‘…Ñ•Ì¤ì(€€€€€€€€€½¹ÍĞ‰½Õ¹‘•‘`€ô5…Ñ ¹µ…à À°5…Ñ ¹µ¥¸¡µ…á`°…¹‘¥‘…Ñ•`¤¤ì(€€€€€€€€€½¹ÍĞ‰½Õ¹‘•‘d€ô5…Ñ ¹µ…à À°5…Ñ ¹µ¥¸¡µ…ád°…¹‘¥‘…Ñ•d¤¤ì(€€€€€€€€€¥˜€ ……¹A±…”¡‰½Õ¹‘•‘`°‰½Õ¹‘•‘d¤¤½¹Ñ¥¹Õ”ì(€€€€€€€€€‰±½¬¹Õ¹Á±…•€ô™…±Í”ì(€€€€€€€€€‰±½¬¹à€ô‰½Õ¹‘•‘`ì(€€€€€€€€€‰±½¬¹ä€ô‰½Õ¹‘•‘dì(€€€€€€€€€É•ÑÕÉ¸ÑÉÕ”ì(€€€€€€€ô(€€€€€ô(€€€ô(€€€É•ÑÕÉ¸™…±Í”ì(€ô((€™Õ¹Ñ¥½¸…‘‘A…±•ÑÑ•±•µ•¹Ğ¡İ½É°Á½¥¹Ğ°ÑÉå½µ‰¥¹”°Á½¥¹Ñ•ÉA½¥¹Ğ€ôÁ½¥¹Ğ¤ì(€€€€¼¼UÍ”Ñ¡”…ÑÕ…°‘É½ÀÁ½¥¹Ñ•È™¥ÉÍĞ¸Q¡”‰…¹¬ÍÁÉ¥Ñ”ÌÉ…ˆ½™™Í•Ğ…¸(€€€€¼¼½Ñ¡•Éİ¥Í”Í¡¥™Ğ¥ÑÌÙ¥ÍÕ…°•¹Ñ•È½™˜Ñ¡”Ñ…É•ĞÍÅÕ…É”¸(€€€½¹ÍĞÑ…É•Ğ€ôÑÉå½µ‰¥¹”€ü¡¥ÑQ•ÍĞ¡Á½¥¹Ñ•ÉA½¥¹Ğ¤ñğ¡¥ÑQ•ÍĞ¡Á½¥¹Ğ¤€è¹Õ±°ì(€€€½¹ÍĞ‰±½¬€ôµ…­•	±½¬¡‰…¹¬µ½Áä´‘ì¬­ÍÑ…Ñ”¹Á…±•ÑÑ•½Áå½Õ¹Ñõ€°•±•µ•¹Ğ¡İ½É¤¤ì(€€€‰±½¬¹à€ôÁ½¥¹Ğ¹à€´ÍÑ…Ñ”¹±…å½ÕĞ¹Í¥é”€¼€Èì(€€€‰±½¬¹ä€ôÁ½¥¹Ğ¹ä€´ÍÑ…Ñ”¹±…å½ÕĞ¹Í¥é”€¼€Èì(€€€ÍÑ…Ñ”¹‰±½­Ì¹ÁÕÍ ¡‰±½¬¤ì(€€€¥˜€¡Ñ…É•Ğ€˜˜½µ‰¥¹”¡Ñ…É•Ğ°‰±½¬¤¤ì(€€€€€ÍÑ…ÉÑÑ¥Ù•5½Ù•µ•¹Ğ ¤ì(€€€€€É•ÑÕÉ¸ì(€€€ô(€€€¥˜€ …‘É½Á%¹±•…É¥¹œ¡‰±½¬°‰±½¬¹à°‰±½¬¹ä¤¤ì(€€€€€ÍÑ…Ñ”¹‰±½­Ì€ôÍÑ…Ñ”¹‰±½­Ì¹™¥±Ñ•È¡…¹‘¥‘…Ñ”€ôø…¹‘¥‘…Ñ”¹¥€„ôô‰±½¬¹¥¤ì(€€€€€Í•ÑMÑ…ÑÕÌ ‰Q¡”±•…É¥¹œ¥Ì™Õ±°ìÑ¡•É”¥Ì¹¼½Á•¸ÍÁ…”™½È…¹½Ñ¡•È±½¸ˆ¤ì(€€€€€É•ÑÕÉ¸ì(€€€ô(€€€ÍÑ…Ñ”¹Í•±•Ñ•‘%€ô‰±½¬¹¥ì(€€€ÍÑ…Ñ”¹™½ÕÍ•‘%€ô‰±½¬¹¥ì(€€€É•¹‘•É•Ñ…¥° ¤ì(€€€‘É…İ5…À ¤ì(€€€Í•ÑMÑ…ÑÕÌ¡ÑÉå½µ‰¥¹”€˜˜Ñ…É•Ğ(€€€€€€ü€‘íİ½É¹Ñ½1½İ•É…Í” ¥ô‘½•Ì¹½Ğ½µ‰¥¹”İ¥Ñ Ñ¡…Ğ±½å•Ğì„½Áäİ…ÌÁ±…•¥¸Ñ¡”±•…É¥¹œ¹€(€€€€€€è½Áä½˜€‘íİ½É¹Ñ½1½İ•É…Í” ¥ôİ…Ì…‘‘•Ñ¼Ñ¡”±•…É¥¹œ¸Q¡”‰…¹¬Í½ÕÉ”É•µ…¥¹Ì¹€¤ì(€€€ÍÑ…ÉÑÑ¥Ù•5½Ù•µ•¹Ğ ¤ì(€ô((€™Õ¹Ñ¥½¸Á½¥¹Ñ%¹Í¥‘•I•Ğ¡à°ä°É•Ğ¤ì(€€€É•ÑÕÉ¸à€øôÉ•Ğ¹±•™Ğ€˜˜à€ğôÉ•Ğ¹É¥¡Ğ€˜˜ä€øôÉ•Ğ¹Ñ½À€˜˜ä€ğôÉ•Ğ¹‰½ÑÑ½´ì(€ô((€™Õ¹Ñ¥½¸Á…±•ÑÑ•É½ÁQ…É•Ğ¡±¥•¹Ñ`°±¥•¹Ñd¤ì(€€€½¹ÍĞÁ½¥¹Ğ€ô…¹Ù…ÍA½¥¹Ğ¡ì±¥•¹Ñ`°±¥•¹Ñdô¤ì(€€€½¹ÍĞ¡Õ€ô…µ•!Õ‘1…å½ÕĞ ¤ì(€€€½¹ÍĞÉ•Ğ€ô…¹Ù…Ì¹•Ñ	½Õ¹‘¥¹±¥•¹ÑI•Ğ ¤ì(€€€½¹ÍĞ¥¹Í¥‘•…¹Ù…Ì€ô±¥•¹Ñ`€øôÉ•Ğ¹±•™Ğ€˜˜±¥•¹Ñ`€ğôÉ•Ğ¹É¥¡Ğ€˜˜±¥•¹Ñd€øôÉ•Ğ¹Ñ½À€˜˜±¥•¹Ñd€ğôÉ•Ğ¹‰½ÑÑ½´ì(€€€¥˜€ …¥¹Í¥‘•…¹Ù…Ì¤É•ÑÕÉ¸€‰½ÕÑÍ¥‘”ˆì(€€€¥˜€¡Á½¥¹Ñ%¹Í¥‘•I•Ğ¡Á½¥¹Ğ¹à°Á½¥¹Ğ¹ä°¡Õ¹‰½Õ¹‘Ì¤¤É•ÑÕÉ¸€‰‰…¹¬ˆì(€€€É•ÑÕÉ¸€‰…É‘•¸ˆì(€ô((€™Õ¹Ñ¥½¸ÕÁ‘…Ñ•A…±•ÑÑ•É½ÁQ…É•Ğ¡‘É…œ°±¥•¹Ñ`°±¥•¹Ñd¤ì(€€€½¹ÍĞÉ•¥½¸€ôÁ…±•ÑÑ•É½ÁQ…É•Ğ¡±¥•¹Ñ`°±¥•¹Ñd¤ì(€€€½¹ÍĞÁ½¥¹Ğ€ô…¹Ù…ÍA½¥¹Ğ¡ì±¥•¹Ñ`°±¥•¹Ñdô¤ì(€€€½¹ÍĞ½µ‰¥¹•Q…É•Ğ€ôÉ•¥½¸€ôôô€‰…É‘•¸ˆ€ü¡¥ÑQ•ÍĞ¡Á½¥¹Ğ¤€è¹Õ±°ì(€€€½¹ÍĞÑ…É•Ğ€ô½µ‰¥¹•Q…É•Ğ€ü€‰½µ‰¥¹”ˆ€èÉ•¥½¸ì(€€€¥˜€¡‘É…œ¹‘É½ÁQ…É•Ğ€ôôôÑ…É•Ğ¤É•ÑÕÉ¸ì(€€€‘É…œ¹‘É½ÁQ…É•Ğ€ôÑ…É•Ğì(€€€¥˜€¡Ñ…É•Ğ€ôôô€‰½µ‰¥¹”ˆ¤ì(€€€€€Í•ÑMÑ…ÑÕÌ¡É½À€‘í‘É…œ¹İ½É¹Ñ½1½İ•É…Í” ¥ô½¹Ñ¼€‘í™…•1…‰•°¡½µ‰¥¹•Q…É•Ğ¹½¹Ñ•¹ÑÌ¥ôÑ¼½µ‰¥¹”‘¥É•Ñ±ä™É½´Ñ¡”‰…¹¬¹€¤ì(€€€ô•±Í”¥˜€¡Ñ…É•Ğ€ôôô€‰…É‘•¸ˆ¤ì(€€€€€Í•ÑMÑ…ÑÕÌ ‰É½À¥¸½Á•¸…É‘•¸Ñ¼…‘„½Áä°½È‘¥É•Ñ±ä½¹Ñ¼…¹½Ñ¡•È±½Ñ¼½µ‰¥¹”¸ˆ¤ì(€€€ô•±Í”¥˜€¡Ñ…É•Ğ€ôôô€‰‰…¹¬ˆ¤ì(€€€€€Í•ÑMÑ…ÑÕÌ ‰É½À‰…¬¥¸Ñ¡”•±•µ•¹ĞÁ…¹•°Ñ¼…¹•°ìÑ¡”‰…¹¬Í½ÕÉ”ÍÑ…åÌ…Ù…¥±…‰±”¸ˆ¤ì(€€€ô•±Í”ì(€€€€€Í•ÑMÑ…ÑÕÌ ‰É½À±…ä¥¸Ñ¡”…É‘•¸Ñ¼…‘„½Áä¸Q¡”‰…¹¬Í½ÕÉ”ÍÑ…åÌ¥¸Á±…”¸ˆ¤ì(€€€ô(€ô((€™Õ¹Ñ¥½¸±•…ÉA…±•ÑÑ•É…œ ¤ì(€€€Á…±•ÑÑ•A½¥¹Ñ•ÉÉ…œ€ô¹Õ±°ì(€€€‘É…İ5…À ¤ì(€ô((€™Õ¹Ñ¥½¸µ½Ù•A…±•ÑÑ•A½¥¹Ñ•ÉÉ…œ¡•Ù•¹Ğ¤ì(€€€½¹ÍĞ‘É…œ€ôÁ…±•ÑÑ•A½¥¹Ñ•ÉÉ…œì(€€€¥˜€ …‘É…œñğ•Ù•¹Ğ¹Á½¥¹Ñ•É%€„ôô‘É…œ¹Á½¥¹Ñ•É%¤É•ÑÕÉ¸ì(€€€½¹ÍĞ‘¥ÍÑ…¹”€ô5…Ñ ¹¡åÁ½Ğ¡•Ù•¹Ğ¹±¥•¹Ñ`€´‘É…œ¹ÍÑ…ÉÑ±¥•¹Ñ`°•Ù•¹Ğ¹±¥•¹Ñd€´‘É…œ¹ÍÑ…ÉÑ±¥•¹Ñd¤ì(€€€¥˜€ …‘É…œ¹µ½Ù•€˜˜‘¥ÍÑ…¹”€ğ€Ø¤É•ÑÕÉ¸ì(€€€•Ù•¹Ğ¹ÁÉ•Ù•¹Ñ•™…Õ±Ğ ¤ì(€€€‘É…œ¹µ½Ù•€ôÑÉÕ”ì(€€€‘É…œ¹Á½¥¹Ğ€ô…¹Ù…ÍA½¥¹Ğ¡•Ù•¹Ğ¤ì(€€€ÕÁ‘…Ñ•A…±•ÑÑ•É½ÁQ…É•Ğ¡‘É…œ°•Ù•¹Ğ¹±¥•¹Ñ`°•Ù•¹Ğ¹±¥•¹Ñd¤ì(€€€‘É…İ5…À ¤ì(€ô((€™Õ¹Ñ¥½¸™¥¹¥Í¡A…±•ÑÑ•A½¥¹Ñ•ÉÉ…œ¡•Ù•¹Ğ¤ì(€€€½¹ÍĞ‘É…œ€ôÁ…±•ÑÑ•A½¥¹Ñ•ÉÉ…œì(€€€¥˜€ …‘É…œñğ•Ù•¹Ğ¹Á½¥¹Ñ•É%€„ôô‘É…œ¹Á½¥¹Ñ•É%¤É•ÑÕÉ¸ì(€€€‘É…œ¹Á½¥¹Ğ€ô…¹Ù…ÍA½¥¹Ğ¡•Ù•¹Ğ¤ì(€€€Á…±•ÑÑ•A½¥¹Ñ•ÉÉ…œ€ô¹Õ±°ì(€€€‘É…İ5…À ¤ì(€€€¥˜€ …‘É…œ¹µ½Ù•¤ì(€€€€€…‘‘A…±•ÑÑ•±•µ•¹Ğ¡‘É…œ¹İ½É°ìàèÍÑ…Ñ”¹±…å½ÕĞ¹İ¥‘Ñ €¼€È°äèÍÑ…Ñ”¹±…å½ÕĞ¹¡•¥¡Ğ€¼€Èô°™…±Í”¤ì(€€€€€É•ÑÕÉ¸ì(€€€ô((€€€±…ÍÑA…±•ÑÑ•É½ÁQ¥µ”€ôÁ•É™½Éµ…¹”¹¹½Ü ¤ì(€€€½¹ÍĞÑ…É•Ğ€ôÁ…±•ÑÑ•É½ÁQ…É•Ğ¡•Ù•¹Ğ¹±¥•¹Ñ`°•Ù•¹Ğ¹±¥•¹Ñd¤ì(€€€¥˜€¡Ñ…É•Ğ€ôôô€‰‰…¹¬ˆ¤ì(€€€€€Í•ÑMÑ…ÑÕÌ ‰9¼½Áä…‘‘•¸Q¡”•±•µ•¹ĞÉ•µ…¥¹Ì…Ù…¥±…‰±”¥¸Ñ¡”‰…¹¬¸ˆ¤ì(€€€€€É•ÑÕÉ¸ì(€€€ô(€€€¥˜€¡Ñ…É•Ğ€ôôô€‰…É‘•¸ˆ¤ì(€€€€€½¹ÍĞ‘É½ÁA½¥¹Ğ€ôì(€€€€€€€àè‘É…œ¹Á½¥¹Ğ¹à€´‘É…œ¹½™™Í•Ñ`€¬ÍÑ…Ñ”¹±…å½ÕĞ¹Í¥é”€¼€È°(€€€€€€€äè‘É…œ¹Á½¥¹Ğ¹ä€´‘É…œ¹½™™Í•Ñd€¬ÍÑ…Ñ”¹±…å½ÕĞ¹Í¥é”€¼€È(€€€€€ôì(€€€€€…‘‘A…±•ÑÑ•±•µ•¹Ğ¡‘É…œ¹İ½É°‘É½ÁA½¥¹Ğ°ÑÉÕ”°‘É…œ¹Á½¥¹Ğ¤ì(€€€€€É•ÑÕÉ¸ì(€€€ô(€€€Í•ÑMÑ…ÑÕÌ ‰9¼±…äİ…Ì…‘‘•¸É½ÀÑ¡”•±•µ•¹Ğ½Ù•ÈÑ¡”…É‘•¸ìÑ¡”‰…¹¬Í½ÕÉ”É•µ…¥¹Ì…Ù…¥±…‰±”¸ˆ¤ì(€ô((€İ¥¹‘½Ü¹…‘‘Ù•¹Ñ1¥ÍÑ•¹•È ‰Á½¥¹Ñ•Éµ½Ù”ˆ°µ½Ù•A…±•ÑÑ•A½¥¹Ñ•ÉÉ…œ°ìÁ…ÍÍ¥Ù”è™…±Í”ô¤ì(€İ¥¹‘½Ü¹…‘‘Ù•¹Ñ1¥ÍÑ•¹•È ‰Á½¥¹Ñ•ÉÕÀˆ°™¥¹¥Í¡A…±•ÑÑ•A½¥¹Ñ•ÉÉ…œ¤ì(€İ¥¹‘½Ü¹…‘‘Ù•¹Ñ1¥ÍÑ•¹•È ‰Á½¥¹Ñ•É…¹•°ˆ°•Ù•¹Ğ€ôøì(€€€½¹ÍĞ‘É…œ€ôÁ…±•ÑÑ•A½¥¹Ñ•ÉÉ…œì(€€€¥˜€ …‘É…œñğ•Ù•¹Ğ¹Á½¥¹Ñ•É%€„ôô‘É…œ¹Á½¥¹Ñ•É%¤É•ÑÕÉ¸ì(€€€±•…ÉA…±•ÑÑ•É…œ ¤ì(€€€¥˜€¡‘É…œ¹µ½Ù•¤Í•ÑMÑ…ÑÕÌ ‰±•µ•¹Ğ‘É…œ…¹•±±•¸Q¡”‰…¹¬Í½ÕÉ”É•µ…¥¹Ì…Ù…¥±…‰±”¸ˆ¤ì(€ô¤ì((€™Õ¹Ñ¥½¸É•¹‘•É±•µ•¹Ñ	…¹¬ ¤ì(€€€•±•µ•¹Ñ	…¹¬¹É•Á±…•¡¥±‘É•¸ ¤ì(€€€™½È€¡½¹ÍĞİ½É½˜•±•µ•¹Ñ]½É‘Ì¤ì(€€€€€½¹ÍĞ‰ÕÑÑ½¸€ô‘½Õµ•¹Ğ¹É•…Ñ•±•µ•¹Ğ ‰‰ÕÑÑ½¸ˆ¤ì(€€€€€‰ÕÑÑ½¸¹ÑåÁ”€ô€‰‰ÕÑÑ½¸ˆì(€€€€€‰ÕÑÑ½¸¹±…ÍÍ9…µ”€ô€‰•±•µ•¹ĞµÑ½­•¸ˆì(€€€€€½¹ÍĞ½¹Ñ•¹ÑÌ€ô•±•µ•¹Ğ¡İ½É¤ì(€€€€€½¹ÍĞµ•…¹¥¹œ€ô‘•ÍÉ¥‰”¡½¹Ñ•¹ÑÌ¤ì(€€€€€½¹ÍĞÍÁÉ¥Ñ•A…Ñ €ô•±•µ•¹ÑMÁÉ¥Ñ•A…Ñ¡Ímµ•…¹¥¹œ¹¥‘tì(€€€€€½¹ÍĞÍÁÉ¥Ñ”€ô‘½Õµ•¹Ğ¹É•…Ñ•±•µ•¹Ğ ‰¥µœˆ¤ì(€€€€€ÍÁÉ¥Ñ”¹±…ÍÍ9…µ”€ô€‰•±•µ•¹ĞµÑ½­•¸µ…ÉĞˆì(€€€€€ÍÁÉ¥Ñ”¹…±Ğ€ô€ˆˆì(€€€€€ÍÁÉ¥Ñ”¹‘É……‰±”€ô™…±Í”ì(€€€€€ÍÁÉ¥Ñ”¹ÍÉŒ€ôÍÁÉ¥Ñ•A…Ñ (€€€€€€€€üÑ¥¹Ñ•‘±•µ•¹ÑMÁÉ¥Ñ”¡µ•…¹¥¹œ¹¥°µ•…¹¥¹œ¹½±½É%¹Ñ•¹Ñ5…Í¬€üüµ•…¹¥¹œ¹½±½É5…Í¬€üü€À¤¹Ñ½…Ñ…UI0 ¤(€€€€€€€€èÑ¥¹Ñ•‘±…ä¡µ•…¹¥¹œ¹½±½É%¹Ñ•¹Ñ5…Í¬€üüµ•…¹¥¹œ¹½±½É5…Í¬€üü€À¤¹Ñ½…Ñ…UI0 ¤ì(€€€€€‰ÕÑÑ½¸¹…ÁÁ•¹¡ÍÁÉ¥Ñ”¤ì(€€€€€½¹ÍĞ±…‰•°€ô‘½Õµ•¹Ğ¹É•…Ñ•±•µ•¹Ğ ‰ÍÁ…¸ˆ¤ì(€€€€€±…‰•°¹±…ÍÍ9…µ”€ô€‰•±•µ•¹ĞµÑ½­•¸µ±…‰•°ˆì(€€€€€±…‰•°¹Ñ•áÑ½¹Ñ•¹Ğ€ô™…•1…‰•°¡½¹Ñ•¹ÑÌ¤ì(€€€€€±…‰•°¹ÍÑå±”¹™½¹ÑM¥é”€ô€‘í™…•½¹ÑM¥é”¡±…‰•°¹Ñ•áÑ½¹Ñ•¹Ğ°ÍÑ…Ñ”¹±…å½ÕĞ¹Í¥é”¥õÁá€ì(€€€€€‰ÕÑÑ½¸¹…ÁÁ•¹¡±…‰•°¤ì(€€€€€‰ÕÑÑ½¸¹‘…Ñ…Í•Ğ¹•±•µ•¹Ñ]½É€ôİ½Éì(€€€€€‰ÕÑÑ½¸¹‘É……‰±”€ô™…±Í”ì(€€€€€‰ÕÑÑ½¸¹Í•ÑÑÑÉ¥‰ÕÑ” ‰…É¥„µ±…‰•°ˆ°‘„½Áä½˜€‘í™…•1…‰•°¡½¹Ñ•¹ÑÌ¥ôÑ¼Ñ¡”…µ”İ½É±‘€¤ì(€€€€€•±•µ•¹Ñ	…¹¬¹…ÁÁ•¹¡‰ÕÑÑ½¸¤ì(€€€ô(€ô((€•±•µ•¹Ñ	…¹¬¹…‘‘Ù•¹Ñ1¥ÍÑ•¹•È ‰±¥¬ˆ°•Ù•¹Ğ€ôøì(€€€½¹ÍĞ‰ÕÑÑ½¸€ô•Ù•¹Ğ¹Ñ…É•Ğ¹±½Í•ÍĞ ‰m‘…Ñ„µ•±•µ•¹Ğµİ½É‘tˆ¤ì(€€€¥˜€ …‰ÕÑÑ½¸ñğÁ•É™½Éµ…¹”¹¹½Ü ¤€´±…ÍÑA…±•ÑÑ•É½ÁQ¥µ”€ğ€ĞÀÀ¤É•ÑÕÉ¸ì(€€€…‘‘A…±•ÑÑ•±•µ•¹Ğ¡‰ÕÑÑ½¸¹‘…Ñ…Í•Ğ¹•±•µ•¹Ñ]½É°ì(€€€€€àèÍÑ…Ñ”¹±…å½ÕĞ¹İ¥‘Ñ €¼€È°(€€€€€äèÍÑ…Ñ”¹±…å½ÕĞ¹¡•¥¡Ğ€¼€È(€€€ô°™…±Í”¤ì(€ô¤ì((€½¹ÍĞµ½Ù•µ•¹Ñ%‘Ì€ôl‰‘¼µµ½Ù”µ±•™Ğˆ°€‰‘¼µµ½Ù”µÉ¥¡Ğˆ°€‰‘¼µµ½Ù”µÕÀˆ°€‰‘¼µµ½Ù”µ‘½İ¸ˆ°€‰‘¼µµ½Ù”µÉ…¹‘½´‰tì((€™Õ¹Ñ¥½¸Á…Ñ¡İ…åÍ½É5•…¹¥¹œ¡µ•…¹¥¹œ¤ì(€€€¥˜€¡µ•…¹¥¹œ¹¥€ôôô€‰½±•´µÁ…¥Èˆ¤ì(€€€€€É•ÑÕÉ¸µ•…¹¥¹œ¹Á…Ñ¡İ…åÌñğmì(€€€€€€€Í•¹Í”èµ•…¹¥¹œ¹Í•¹Í”°(€€€€€€€µ½Ñ¥Ù”èµ•…¹¥¹œ¹µ½Ñ¥Ù”°(€€€€€€€‰•¡…Ù¥½É%µÁ±•µ•¹Ñ•èµ•…¹¥¹œ¹‰•¡…Ù¥½É%µÁ±•µ•¹Ñ•(€€€€€õtì(€€€ô(€€€É•ÑÕÉ¸µ•…¹¥¹œ¹¥€ôôô€‰½µÁ½Õ¹µ½±•´ˆ€üµ•…¹¥¹œ¹Á…Ñ¡İ…åÌñğmt€èmtì(€ô((€™Õ¹Ñ¥½¸Á…Ñ¡İ…åMÑ…Ñ•-•ä¡¥¹‘•à°Á…Ñ¡İ…ä¤ì(€€€É•ÑÕÉ¸€‘í¥¹‘•áôè‘íÁ…Ñ¡İ…ä¹Í•¹Í”¹¥‘ôè‘íÁ…Ñ¡İ…ä¹µ½Ñ¥Ù”¹¥‘õ€ì(€ô((€™Õ¹Ñ¥½¸É•ÍÁ½¹Í•Ñ¥½¹½È¡µ½Ñ¥Ù”¤ì(€€€¥˜€¡µ½Ñ¥Ù”¹…Ñ¥½¹QåÁ”€ôôô€‰É…ˆˆñğµ½Ñ¥Ù”¹…Ñ¥½¹QåÁ”€ôôô€‰‘É½Àˆ¤ì(€€€€€É•ÑÕÉ¸ì(€€€€€€€ÑåÁ”èµ½Ñ¥Ù”¹…Ñ¥½¹QåÁ”°(€€€€€€€¡…¹‘M¥‘”èµ½Ñ¥Ù”¹¡…¹‘M¥‘”ñğ¹Õ±°°(€€€€€€€‘¥É•Ñ¥½¸èµ½Ñ¥Ù”¹…Ñ¥½¹¥É•Ñ¥½¸ñğ¹Õ±°(€€€€€ôì(€€€ô(€€€É•ÑÕÉ¸¹Õ±°ì(€ô((€™Õ¹Ñ¥½¸µ½Ù•µ•¹Ñ½È¡‰±½¬¤ì(€€€½¹ÍĞµ•…¹¥¹œ€ô‘•ÍÉ¥‰”¡‰±½¬¹½¹Ñ•¹ÑÌ¤ì(€€€¥˜€¡µ½Ù•µ•¹Ñ%‘Ì¹¥¹±Õ‘•Ì¡µ•…¹¥¹œ¹¥¤¤É•ÑÕÉ¸ì…Ñ¥½¸èµ•…¹¥¹œ°½¹‘¥Ñ¥½¹•è™…±Í”ôì(€€€½¹ÍĞÁ…Ñ¡İ…åÌ€ôÁ…Ñ¡İ…åÍ½É5•…¹¥¹œ¡µ•…¹¥¹œ¤ì(€€€½¹ÍĞ…Ñ¥Ù•A…Ñ €ôÁ…Ñ¡İ…åÌ¹™¥¹ ¡Á…Ñ¡İ…ä°¥¹‘•à¤€ôø(€€€€€Á…Ñ¡İ…ä¹‰•¡…Ù¥½É%µÁ±•µ•¹Ñ•€˜˜µ½Ù•µ•¹Ñ%‘Ì¹¥¹±Õ‘•Ì¡Á…Ñ¡İ…ä¹µ½Ñ¥Ù”ü¹¥¤€˜˜(€€€€€‰±½¬¹Á…Ñ¡İ…åM•¹Í•MÑ…Ñ•Ìü¹mÁ…Ñ¡İ…åMÑ…Ñ•-•ä¡¥¹‘•à°Á…Ñ¡İ…ä¥t€ôôôÑÉÕ”(€€€€¤ì(€€€¥˜€¡…Ñ¥Ù•A…Ñ ¤ì(€€€€€É•ÑÕÉ¸ì…Ñ¥½¸è…Ñ¥Ù•A…Ñ ¹µ½Ñ¥Ù”°½¹‘¥Ñ¥½¹•èÑÉÕ”ôì(€€€ô(€€€É•ÑÕÉ¸¹Õ±°ì(€ô((€™Õ¹Ñ¥½¸Í•¹Í½É½È¡‰±½¬¤ì(€€€½¹ÍĞµ•…¹¥¹œ€ô‘•ÍÉ¥‰”¡‰±½¬¹½¹Ñ•¹ÑÌ¤ì(€€€¥˜€¡…Ñ¥Ù•M•¹Í•%‘Ì¹¥¹±Õ‘•Ì¡µ•…¹¥¹œ¹¥¤¤É•ÑÕÉ¸µ•…¹¥¹œì(€€€½¹ÍĞÁ…Ñ¡İ…ä€ôÁ…Ñ¡İ…åÍ½É5•…¹¥¹œ¡µ•…¹¥¹œ¤¹™¥¹¡¥Ñ•´€ôø(€€€€€¥Ñ•´¹‰•¡…Ù¥½É%µÁ±•µ•¹Ñ•€˜˜…Ñ¥Ù•M•¹Í•%‘Ì¹¥¹±Õ‘•Ì¡¥Ñ•´¹Í•¹Í”ü¹¥¤(€€€€¤ì(€€€¥˜€¡Á…Ñ¡İ…ä¤É•ÑÕÉ¸Á…Ñ¡İ…ä¹Í•¹Í”ì(€€€É•ÑÕÉ¸¹Õ±°ì(€ô((€™Õ¹Ñ¥½¸Í•¹Í•½¹‘¥Ñ¥½¹•ÍÉ¥ÁÑ¥½¸¡Í•¹Í”¤ì(€€€½¹ÍĞÍ•¹Í•-¥¹€ôÍ•¹Í”¹Í•¹Í•-¥¹ñğ€¡Í•¹Í”¹¥€ôôô€‰İ¡¥±”µ¡…¹ˆ€ü€‰Ñ½Õ ˆ€è€‰Í•”ˆ¤ì(€€€¥˜€¡Í•¹Í•-¥¹€ôôô€‰¡½±ˆ¤É•ÑÕÉ¸Í•¹Í”¹¡…¹‘M¥‘”(€€€€€€üÑ¡”€‘íÍ•¹Í”¹¡…¹‘M¥‘•ô¡…¹¥Ì¡½±‘¥¹œ±…å€(€€€€€€è€‰•¥Ñ¡•È¡…¹¥Ì¡½±‘¥¹œ±…äˆì(€€€¥˜€¡Í•¹Í•-¥¹€ôôô€‰Ñ½Õ ˆ¤ì(€€€€€½¹ÍĞ½±½É9…µ•Ì€ôì€Äè€‰É•ˆ°€Èè€‰É••¸ˆ°€Ìè€‰å•±±½Üˆ°€Ğè€‰‰±Õ”ˆ°€Ôè€‰µ…•¹Ñ„ˆ°€Øè€‰å…¸ˆ°€Üè€‰İ¡¥Ñ”ˆôì(€€€€€½¹ÍĞ½±½È€ô½±½É9…µ•ÍmÍ•¹Í”¹Ñ½Õ¡½±½É5…Í­tì(€€€€€¥˜€¡Í•¹Í”¹¡…¹‘M¥‘”¤É•ÑÕÉ¸…¹½Ñ¡•È±…ä±½İ¥Ñ¡¥¸É•… ½˜Ñ¡”€‘íÍ•¹Í”¹¡…¹‘M¥‘•ô¡…¹‘€ì(€€€€€¥˜€¡Í•¹Í”¹Ñ½Õ¡=‰©•Ñ-¥¹€ôôô€‰¡…¹ˆ¤É•ÑÕÉ¸€‰„¡…¹±½¥Ì…‘©…•¹Ğˆì(€€€€€¥˜€¡Í•¹Í”¹Ñ½Õ¡=‰©•Ñ-¥¹€ôôô€‰±½ˆ€˜˜½±½È¤É•ÑÕÉ¸„€‘í½±½Éô±½¥Ì…‘©…•¹Ñ€ì(€€€€€¥˜€¡½±½È¤É•ÑÕÉ¸„±…ä±½İ¥Ñ €‘í½±½ÉôÁ¥µ•¹Ğ¥Ì…‘©…•¹Ñ€ì(€€€€€É•ÑÕÉ¸€‰…¹½Ñ¡•È±…ä±½¥Ì…‘©…•¹Ğˆì(€€€ô(€€€½¹ÍĞÉ…¹”€ôÍ•¹Í”¹Í¥¡ÑI…¹••±±Ìñğ€Ìì(€€€½¹ÍĞ½±½É9…µ•Ì€ôì€Äè€‰É•ˆ°€Èè€‰É••¸ˆ°€Ìè€‰å•±±½Üˆ°€Ğè€‰‰±Õ”ˆ°€Ôè€‰µ…•¹Ñ„ˆ°€Øè€‰å…¸ˆ°€Üè€‰İ¡¥Ñ”ˆôì(€€€½¹ÍĞ‘¥É•Ñ¥½¹]½É‘Ì€ôì±•™Ğè€‰Ñ¼Ñ¡”±•™Ğˆ°É¥¡Ğè€‰Ñ¼Ñ¡”É¥¡Ğˆ°ÕÀè€‰…‰½Ù”ˆ°‘½İ¸è€‰‰•±½Üˆôì(€€€¥˜€¡Í•¹Í”¹‘¥É•Ñ¥½¸¤É•ÑÕÉ¸…¹½Ñ¡•È±…ä±½¥Ì‘¥É•Ñ±ä€‘í‘¥É•Ñ¥½¹]½É‘ÍmÍ•¹Í”¹‘¥É•Ñ¥½¹uôİ¥Ñ¡¥¸€‘íÉ…¹•ô•±±Í€ì(€€€½¹ÍĞ½±½È€ô½±½É9…µ•ÍmÍ•¹Í”¹Í¥¡Ñ½±½É5…Í­tì(€€€É•ÑÕÉ¸½±½È(€€€€€€ü„±…ä±½İ¥Ñ €‘í½±½ÉôÁ¥µ•¹Ğ¥Ìİ¥Ñ¡¥¸€‘íÉ…¹•ô•±±Í€(€€€€€€è±…äİ¥Ñ¡¥¸€‘íÉ…¹•ô•±±Í€ì(€ô((€™Õ¹Ñ¥½¸Í•¹Í½É%ÍQÉÕ”¡‰±½¬°Í•¹Í”¤ì(€€€½¹ÍĞ•¹Ñ•É`€ô‰±½¬¹à€¬ÍÑ…Ñ”¹±…å½ÕĞ¹Í¥é”€¼€Èì(€€€½¹ÍĞ•¹Ñ•Éd€ô‰±½¬¹ä€¬ÍÑ…Ñ”¹±…å½ÕĞ¹Í¥é”€¼€Èì(€€€½¹ÍĞ½Ñ¡•ÉÌ€ôÍÑ…Ñ”¹‰±½­Ì¹™¥±Ñ•È¡½Ñ¡•È€ôø€…½Ñ¡•È¹Õ¹Á±…•€˜˜½Ñ¡•È¹¥€„ôô‰±½¬¹¥¤ì(€€€€¼¼Á…±•ÑÑ”‘É…œ¥Ì„Ù¥Í¥‰±”±…ä½Áäİ¡¥±”¥Ğµ½Ù•Ì½Ù•ÈÑ¡”…É‘•¸¸(€€€€¼¼1•ĞÍ•¹Í½ÉÌ¥¹ÍÁ•ĞÑ¡…ĞÁÉ•Ù¥•Üİ¥Ñ¡½ÕĞ¥¹Í•ÉÑ¥¹œ¥Ğ¥¹Ñ¼…µ”ÍÑ…Ñ”°(€€€€¼¼Í¼É…ˆ½‘É½À±½¥Œ…¹¹½ĞÑÉ•…ĞÑ¡”‰…¹¬½Áä…Ì„É•…°µ½Ù…‰±”±½¸(€€€¥˜€¡Á…±•ÑÑ•A½¥¹Ñ•ÉÉ…œü¹µ½Ù•€˜˜Á…±•ÑÑ•A½¥¹Ñ•ÉÉ…œ¹‘É½ÁQ…É•Ğ€„ôô€‰‰…¹¬ˆ€˜˜(€€€€€€€Á…±•ÑÑ•A½¥¹Ñ•ÉÉ…œ¹‘É½ÁQ…É•Ğ€„ôô€‰½ÕÑÍ¥‘”ˆ¤ì(€€€€€½¹ÍĞ‘É…œ€ôÁ…±•ÑÑ•A½¥¹Ñ•ÉÉ…œì(€€€€€½Ñ¡•ÉÌ¹ÁÕÍ ¡ì(€€€€€€€¥è€‰Á…±•ÑÑ”µ‘É…œµÁÉ•Ù¥•Üˆ°(€€€€€€€½¹Ñ•¹ÑÌè•±•µ•¹Ğ¡‘É…œ¹İ½É¤°(€€€€€€€àè‘É…œ¹Á½¥¹Ğ¹à€´‘É…œ¹½™™Í•Ñ`°(€€€€€€€äè‘É…œ¹Á½¥¹Ğ¹ä€´‘É…œ¹½™™Í•Ñd°(€€€€€€€Õ¹Á±…•è™…±Í”(€€€€€ô¤ì(€€€ô(€€€½¹ÍĞÍ•¹Í•-¥¹€ôÍ•¹Í”¹Í•¹Í•-¥¹ñğ€¡Í•¹Í”¹¥€ôôô€‰İ¡¥±”µ¡…¹ˆ€ü€‰Ñ½Õ ˆ€è€‰Í•”ˆ¤ì(€€€±•ĞÁ½Í¥Ñ¥Ù•I•ÍÕ±Ğ€ô™…±Í”ì(€€€¥˜€¡Í•¹Í•-¥¹€ôôô€‰Í•”ˆ€˜˜Í•¹Í”¹‘¥É•Ñ¥½¸¤ì(€€€€€½¹ÍĞÉ…¹”€ôÍÑ…Ñ”¹±…å½ÕĞ¹•±°€¨€¡Í•¹Í”¹Í¥¡ÑI…¹••±±Ìñğ€Ì¤ì(€€€€€½¹ÍĞ±…¹•Q½±•É…¹”€ôÍÑ…Ñ”¹±…å½ÕĞ¹•±°€¼€Èì(€€€€€Á½Í¥Ñ¥Ù•I•ÍÕ±Ğ€ô½Ñ¡•ÉÌ¹Í½µ”¡½Ñ¡•È€ôøì(€€€€€€€½¹ÍĞ‘à€ô½Ñ¡•È¹à€´‰±½¬¹àì(€€€€€€€½¹ÍĞ‘ä€ô½Ñ¡•È¹ä€´‰±½¬¹äì(€€€€€€€¥˜€¡Í•¹Í”¹‘¥É•Ñ¥½¸€ôôô€‰ÕÀˆ¤É•ÑÕÉ¸5…Ñ ¹…‰Ì¡‘à¤€ğô±…¹•Q½±•É…¹”€˜˜‘ä€ğ€À€˜˜€µ‘ä€ğôÉ…¹”ì(€€€€€€€¥˜€¡Í•¹Í”¹‘¥É•Ñ¥½¸€ôôô€‰‘½İ¸ˆ¤É•ÑÕÉ¸5…Ñ ¹…‰Ì¡‘à¤€ğô±…¹•Q½±•É…¹”€˜˜‘ä€ø€À€˜˜‘ä€ğôÉ…¹”ì(€€€€€€€¥˜€¡Í•¹Í”¹‘¥É•Ñ¥½¸€ôôô€‰±•™Ğˆ¤É•ÑÕÉ¸5…Ñ ¹…‰Ì¡‘ä¤€ğô±…¹•Q½±•É…¹”€˜˜‘à€ğ€À€˜˜€µ‘à€ğôÉ…¹”ì(€€€€€€€¥˜€¡Í•¹Í”¹‘¥É•Ñ¥½¸€ôôô€‰É¥¡Ğˆ¤É•ÑÕÉ¸5…Ñ ¹…‰Ì¡‘ä¤€ğô±…¹•Q½±•É…¹”€˜˜‘à€ø€À€˜˜‘à€ğôÉ…¹”ì(€€€€€€€É•ÑÕÉ¸™…±Í”ì(€€€€€ô¤ì(€€€ô•±Í”¥˜€¡Í•¹Í•-¥¹€ôôô€‰Í•”ˆ¤ì(€€€€€½¹ÍĞÉ…¹”€ôÍÑ…Ñ”¹±…å½ÕĞ¹•±°€¨€¡Í•¹Í”¹Í¥¡ÑI…¹••±±Ìñğ€Ì¤ì(€€€€€Á½Í¥Ñ¥Ù•I•ÍÕ±Ğ€ô½Ñ¡•ÉÌ¹Í½µ”¡½Ñ¡•È€ôøì(€€€€€€€½¹ÍĞ½±½É5…Í¬€ô‘•ÍÉ¥‰”¡½Ñ¡•È¹½¹Ñ•¹ÑÌ¤¹½±½É%¹Ñ•¹Ñ5…Í¬€üü‘•ÍÉ¥‰”¡½Ñ¡•È¹½¹Ñ•¹ÑÌ¤¹½±½É5…Í¬€üü€Àì(€€€€€€€¥˜€¡9Õµ‰•È¹¥Í%¹Ñ••È¡Í•¹Í”¹Í¥¡Ñ½±½É5…Í¬¤€˜˜(€€€€€€€€€€€€¡½±½É5…Í¬€˜Í•¹Í”¹Í¥¡Ñ½±½É5…Í¬¤€„ôôÍ•¹Í”¹Í¥¡Ñ½±½É5…Í¬¤É•ÑÕÉ¸™…±Í”ì(€€€€€€€É•ÑÕÉ¸5…Ñ ¹¡åÁ½Ğ (€€€€€€€€€€¡½Ñ¡•È¹à€¬ÍÑ…Ñ”¹±…å½ÕĞ¹Í¥é”€¼€È¤€´•¹Ñ•É`°(€€€€€€€€€€¡½Ñ¡•È¹ä€¬ÍÑ…Ñ”¹±…å½ÕĞ¹Í¥é”€¼€È¤€´•¹Ñ•Éd(€€€€€€€€¤€ğôÉ…¹”ì(€€€€€ô¤ì(€€€ô•±Í”¥˜€¡Í•¹Í•-¥¹€ôôô€‰¡½±ˆ¤ì(€€€€€½¹ÍĞ¡…¹‘Ì€ô‰±½¬¹¡•±‘%Ñ•µÌñğíôì(€€€€€Á½Í¥Ñ¥Ù•I•ÍÕ±Ğ€ôÍ•¹Í”¹¡…¹‘M¥‘”€ü	½½±•…¸¡¡…¹‘ÍmÍ•¹Í”¹¡…¹‘M¥‘•t¤€è	½½±•…¸¡¡…¹‘Ì¹±•™Ğñğ¡…¹‘Ì¹É¥¡Ğ¤ì(€€€ô•±Í”¥˜€¡Í•¹Í•-¥¹€ôôô€‰Ñ½Õ ˆ¤ì(€€€€€€¼¼Q¡”±•…É¥¹œ…±±½İÌ™É•”Á±…•µ•¹Ğ°Í¼Ñ½Õ Í¡½Õ±‰”‰…Í•½¸Ñ¡”(€€€€€€¼¼…À‰•Ñİ••¸ÍÅÕ…É”±½‘ÌÉ…Ñ¡•ÈÑ¡…¸„™¥á••¹Ñ•ÈµÑ¼µ•¹Ñ•È•±°(€€€€€€¼¼É…‘¥ÕÌ¸Q¡”Íµ…±°Ñ½±•É…¹”…½µµ½‘…Ñ•ÌÑ¡”¹½Éµ…°…À‰•Ñİ••¸(€€€€€€¼¼¹•¥¡‰½É¥¹œÁ¥••Ì¥¸Ñ¡”…É‘•¸¸(€€€€€½¹ÍĞÑ½Õ¡…À€ô5…Ñ ¹µ…à à°ÍÑ…Ñ”¹±…å½ÕĞ¹•±°€´ÍÑ…Ñ”¹±…å½ÕĞ¹Í¥é”€¬€È¤ì(€€€€€Á½Í¥Ñ¥Ù•I•ÍÕ±Ğ€ô½Ñ¡•ÉÌ¹Í½µ”¡½Ñ¡•È€ôøì(€€€€€€€½¹ÍĞ½Ñ¡•É•¹Ñ•É`€ô½Ñ¡•È¹à€¬ÍÑ…Ñ”¹±…å½ÕĞ¹Í¥é”€¼€Èì(€€€€€€€¥˜€¡Í•¹Í”¹¡…¹‘M¥‘”€ôôô€‰±•™Ğˆ€˜˜½Ñ¡•É•¹Ñ•É`€øô•¹Ñ•É`¤É•ÑÕÉ¸™…±Í”ì(€€€€€€€¥˜€¡Í•¹Í”¹¡…¹‘M¥‘”€ôôô€‰É¥¡Ğˆ€˜˜½Ñ¡•É•¹Ñ•É`€ğô•¹Ñ•É`¤É•ÑÕÉ¸™…±Í”ì(€€€€€€€½¹ÍĞµ•…¹¥¹œ€ô‘•ÍÉ¥‰”¡½Ñ¡•È¹½¹Ñ•¹ÑÌ¤ì(€€€€€€€¥˜€¡Í•¹Í”¹Ñ½Õ¡=‰©•Ñ-¥¹€˜˜µ•…¹¥¹œ¹½‰©•Ñ-¥¹€„ôôÍ•¹Í”¹Ñ½Õ¡=‰©•Ñ-¥¹¤É•ÑÕÉ¸™…±Í”ì(€€€€€€€¥˜€¡9Õµ‰•È¹¥Í%¹Ñ••È¡Í•¹Í”¹Ñ½Õ¡½±½É5…Í¬¤¤ì(€€€€€€€€€½¹ÍĞ½±½É5…Í¬€ôµ•…¹¥¹œ¹½±½É%¹Ñ•¹Ñ5…Í¬€üüµ•…¹¥¹œ¹½±½É5…Í¬€üü€Àì(€€€€€€€€€¥˜€ ¡½±½É5…Í¬€˜Í•¹Í”¹Ñ½Õ¡½±½É5…Í¬¤€„ôôÍ•¹Í”¹Ñ½Õ¡½±½É5…Í¬¤É•ÑÕÉ¸™…±Í”ì(€€€€€€€ô(€€€€€€€½¹ÍĞ…Á`€ô5…Ñ ¹µ…à À°5…Ñ ¹…‰Ì¡½Ñ¡•É•¹Ñ•É`€´•¹Ñ•É`¤€´ÍÑ…Ñ”¹±…å½ÕĞ¹Í¥é”¤ì(€€€€€€€½¹ÍĞ½Ñ¡•É•¹Ñ•Éd€ô½Ñ¡•È¹ä€¬ÍÑ…Ñ”¹±…å½ÕĞ¹Í¥é”€¼€Èì(€€€€€€€½¹ÍĞ…Ád€ô5…Ñ ¹µ…à À°5…Ñ ¹…‰Ì¡½Ñ¡•É•¹Ñ•Éd€´•¹Ñ•Éd¤€´ÍÑ…Ñ”¹±…å½ÕĞ¹Í¥é”¤ì(€€€€€€€É•ÑÕÉ¸…Á`€ğôÑ½Õ¡…À€˜˜…Ád€ğôÑ½Õ¡…Àì(€€€€€ô¤ì(€€€ô(€€€É•ÑÕÉ¸Í•¹Í”¹¹•…Ñ•€ü€…Á½Í¥Ñ¥Ù•I•ÍÕ±Ğ€èÁ½Í¥Ñ¥Ù•I•ÍÕ±Ğì(€ô((€™Õ¹Ñ¥½¸¡…ÍÑ¥Ù•AÉ½Ñ½ÑåÁ•	•¡…Ù¥½È¡‰±½¬¤ì(€€€½¹ÍĞµ•…¹¥¹œ€ô‘•ÍÉ¥‰”¡‰±½¬¹½¹Ñ•¹ÑÌ¤ì(€€€½¹ÍĞÁ…Ñ¡İ…åÌ€ôÁ…Ñ¡İ…åÍ½É5•…¹¥¹œ¡µ•…¹¥¹œ¤ì(€€€É•ÑÕÉ¸µ½Ù•µ•¹Ñ½È¡‰±½¬¤€„ôô¹Õ±°ñğÍ•¹Í½É½È¡‰±½¬¤€„ôô¹Õ±°ñğ…Ñ¥½¹½È¡‰±½¬¤€„ôô¹Õ±°ñğ(€€€€€Á…Ñ¡İ…åÌ¹Í½µ”¡Á…Ñ¡İ…ä€ôøÁ…Ñ¡İ…ä¹‰•¡…Ù¥½É%µÁ±•µ•¹Ñ•€˜˜É•ÍÁ½¹Í•Ñ¥½¹½È¡Á…Ñ¡İ…ä¹µ½Ñ¥Ù”¤¤ì(€ô((€™Õ¹Ñ¥½¸…Ñ¥½¹½È¡‰±½¬¤ì(€€€É•ÑÕÉ¸É•ÍÁ½¹Í•Ñ¥½¹½È¡‘•ÍÉ¥‰”¡‰±½¬¹½¹Ñ•¹ÑÌ¤¤ì(€ô((€™Õ¹Ñ¥½¸Ñ¥­Ñ¥Ù•5½Ù•µ•¹Ğ ¤ì(€€€½¹ÍĞ¹½Ü€ôÁ•É™½Éµ…¹”¹¹½Ü ¤ì(€€€½¹ÍĞ•±…ÁÍ•€ô±…ÍÑ5½Ù•µ•¹ÑQ¥µ”€ôôô¹Õ±°€ü€À€è5…Ñ ¹µ¥¸ ¡¹½Ü€´±…ÍÑ5½Ù•µ•¹ÑQ¥µ”¤€¼€ÄÀÀÀ°€À¸Ä¤ì(€€€±…ÍÑ5½Ù•µ•¹ÑQ¥µ”€ô¹½Üì(€€€¥˜€ …ÍÑ…Ñ”¹‰±½­Ì¹Í½µ”¡¡…ÍÑ¥Ù•AÉ½Ñ½ÑåÁ•	•¡…Ù¥½È¤¤ì(€€€€€İ¥¹‘½Ü¹±•…É%¹Ñ•ÉÙ…°¡µ½Ù•µ•¹ÑQ¥µ•È¤ì(€€€€€µ½Ù•µ•¹ÑQ¥µ•È€ô¹Õ±°ì(€€€€€±…ÍÑ5½Ù•µ•¹ÑQ¥µ”€ô¹Õ±°ì(€€€€€É•ÑÕÉ¸ì(€€€ô((€€€±•Ğµ½Ù•€ô™…±Í”ì(€€€±•Ğ¡…¹‘¡…¹•€ô™…±Í”ì(€€€±•ĞÍ¥¡Ñ¡…¹•€ô™…±Í”ì(€€€½¹ÍĞ…Ñ¥Ù•A…Ñ¡İ…åÌ€ômtì(€€€½¹ÍĞÍ•¹Í½ÉÌ€ômtì(€€€™½È€¡½¹ÍĞ‰±½¬½˜ÍÑ…Ñ”¹‰±½­Ì¤ì(€€€€€½¹ÍĞÁ…Ñ¡İ…åÌ€ôÁ…Ñ¡İ…åÍ½É5•…¹¥¹œ¡‘•ÍÉ¥‰”¡‰±½¬¹½¹Ñ•¹ÑÌ¤¤ì(€€€€€¥˜€¡Á…Ñ¡İ…åÌ¹±•¹Ñ ¤ì(€€€€€€€½¹ÍĞÍÑ…Ñ•Ì€ô‰±½¬¹Á…Ñ¡İ…åM•¹Í•MÑ…Ñ•Ìñğ€¡‰±½¬¹Á…Ñ¡İ…åM•¹Í•MÑ…Ñ•Ì€ôíô¤ì(€€€€€€€±•Ğ…¹åÑ¥Ù”€ô™…±Í”ì(€€€€€€€Á…Ñ¡İ…åÌ¹™½É…  ¡Á…Ñ¡İ…ä°¥¹‘•à¤€ôøì(€€€€€€€€€¥˜€ …Á…Ñ¡İ…ä¹‰•¡…Ù¥½É%µÁ±•µ•¹Ñ•ñğ€……Ñ¥Ù•M•¹Í•%‘Ì¹¥¹±Õ‘•Ì¡Á…Ñ¡İ…ä¹Í•¹Í”¹¥¤¤É•ÑÕÉ¸ì(€€€€€€€€€½¹ÍĞ­•ä€ôÁ…Ñ¡İ…åMÑ…Ñ•-•ä¡¥¹‘•à°Á…Ñ¡İ…ä¤ì(€€€€€€€€€½¹ÍĞİ…Í%¹¥Ñ¥…±¥é•€ôÑåÁ•½˜ÍÑ…Ñ•Ím­•åt€ôôô€‰‰½½±•…¸ˆì(€€€€€€€€€½¹ÍĞİ…ÍÑ¥Ù”€ôÍÑ…Ñ•Ím­•åtì(€€€€€€€€€½¹ÍĞ¥ÍQÉÕ”€ôÍ•¹Í½É%ÍQÉÕ”¡‰±½¬°Á…Ñ¡İ…ä¹Í•¹Í”¤ì(€€€€€€€€€ÍÑ…Ñ•Ím­•åt€ô¥ÍQÉÕ”ì(€€€€€€€€€…¹åÑ¥Ù”ñğô¥ÍQÉÕ”ì(€€€€€€€€€Í•¹Í½ÉÌ¹ÁÕÍ ¡ì‰±½¬°Í•¹Í”èÁ…Ñ¡İ…ä¹Í•¹Í”°Á…Ñ¡İ…äô¤ì(€€€€€€€€€…Ñ¥Ù•A…Ñ¡İ…åÌ¹ÁÕÍ ¡ì‰±½¬°Á…Ñ¡İ…ä°¥¹‘•à°­•ä°…Ñ¥Ù”è¥ÍQÉÕ”ô¤ì(€€€€€€€€€¥˜€¡İ…Í%¹¥Ñ¥…±¥é•€˜˜İ…ÍÑ¥Ù”€„ôô¥ÍQÉÕ”¤Í¥¡Ñ¡…¹•€ôÑÉÕ”ì(€€€€€€€€€¥˜€¡İ…Í%¹¥Ñ¥…±¥é•€˜˜İ…ÍÑ¥Ù”€„ôô¥ÍQÉÕ”¤ì(€€€€€€€€€€€½¹ÍĞ½¹‘¥Ñ¥½¸€ôÍ•¹Í•½¹‘¥Ñ¥½¹•ÍÉ¥ÁÑ¥½¸¡Á…Ñ¡İ…ä¹Í•¹Í”¤ì(€€€€€€€€€€€½¹ÍĞÑÉÕÑ €ô¥ÍQÉÕ”(€€€€€€€€€€€€€€ü€¡Á…Ñ¡İ…ä¹Í•¹Í”¹¹•…Ñ•€ü¹¼€‘í½¹‘¥Ñ¥½¹õ€€è½¹‘¥Ñ¥½¸¤(€€€€€€€€€€€€€€è€¡Á…Ñ¡İ…ä¹Í•¹Í”¹¹•…Ñ•€ü½¹‘¥Ñ¥½¸€è¹¼€‘í½¹‘¥Ñ¥½¹õ€¤ì(€€€€€€€€€€€Í•ÑMÑ…ÑÕÌ¡€‘íÁ…Ñ¡İ…ä¹Í•¹Í”¹±…‰•°¹Ñ½1½İ•É…Í” ¥ôÑ¡•¸€‘íÁ…Ñ¡İ…ä¹µ½Ñ¥Ù”¹±…‰•°¹Ñ½1½İ•É…Í” ¥ô¥Ì€‘í¥ÍQÉÕ”€ü€‰ÑÉÕ”ˆ€è€‰™…±Í”‰ôè€‘íÑÉÕÑ¡ô¹€¤ì(€€€€€€€€€ô(€€€€€€€ô¤ì(€€€€€€€¥˜€¡‰±½¬¹Í•¹Í•Ñ¥Ù”€„ôô…¹åÑ¥Ù”¤ì(€€€€€€€€€‰±½¬¹Í•¹Í•Ñ¥Ù”€ô…¹åÑ¥Ù”ì(€€€€€€€€€Í¥¡Ñ¡…¹•€ôÑÉÕ”ì(€€€€€€€ô(€€€€€€€¥˜€¡Í¥¡Ñ¡…¹•€˜˜ÍÑ…Ñ”¹Í•±•Ñ•‘%€ôôô‰±½¬¹¥¤É•¹‘•É•Ñ…¥° ¤ì(€€€€€ô•±Í”ì(€€€€€€€½¹ÍĞÍ•¹Í”€ôÍ•¹Í½É½È¡‰±½¬¤ì(€€€€€€€¥˜€ …Í•¹Í”¤½¹Ñ¥¹Õ”ì(€€€€€€€½¹ÍĞİ…Í%¹¥Ñ¥…±¥é•€ôÑåÁ•½˜‰±½¬¹Í•¹Í•Ñ¥Ù”€ôôô€‰‰½½±•…¸ˆì(€€€€€€€½¹ÍĞ¥ÍQÉÕ”€ôÍ•¹Í½É%ÍQÉÕ”¡‰±½¬°Í•¹Í”¤ì(€€€€€€€Í•¹Í½ÉÌ¹ÁÕÍ ¡ì‰±½¬°Í•¹Í”ô¤ì(€€€€€€€¥˜€¡‰±½¬¹Í•¹Í•Ñ¥Ù”€„ôô¥ÍQÉÕ”¤ì(€€€€€€€€€‰±½¬¹Í•¹Í•Ñ¥Ù”€ô¥ÍQÉÕ”ì(€€€€€€€€€Í¥¡Ñ¡…¹•€ôÑÉÕ”ì(€€€€€€€€€¥˜€¡ÍÑ…Ñ”¹Í•±•Ñ•‘%€ôôô‰±½¬¹¥¤É•¹‘•É•Ñ…¥° ¤ì(€€€€€€€€€¥˜€¡İ…Í%¹¥Ñ¥…±¥é•¤ì(€€€€€€€€€€€½¹ÍĞ½¹‘¥Ñ¥½¸€ôÍ•¹Í•½¹‘¥Ñ¥½¹•ÍÉ¥ÁÑ¥½¸¡Í•¹Í”¤ì(€€€€€€€€€€€Í•ÑMÑ…ÑÕÌ¡İ¡¥±”€‘íÍ•¹Í”¹±…‰•°¹Ñ½1½İ•É…Í” ¥ô¥Ì€‘í¥ÍQÉÕ”€ü€‰ÑÉÕ”ˆ€è€‰™…±Í”‰ôè€‘í½¹‘¥Ñ¥½¹ô¹€¤ì(€€€€€€€€€ô(€€€€€€€ô(€€€€€ô(€€€ô((€€€½¹ÍĞ…Ñ¥½¹Ì€ômtì(€€€™½È€¡½¹ÍĞ‰±½¬½˜ÍÑ…Ñ”¹‰±½­Ì¤ì(€€€€€½¹ÍĞÁ…Ñ¡İ…åÌ€ôÁ…Ñ¡İ…åÍ½É5•…¹¥¹œ¡‘•ÍÉ¥‰”¡‰±½¬¹½¹Ñ•¹ÑÌ¤¤ì(€€€€€¥˜€ …Á…Ñ¡İ…åÌ¹±•¹Ñ ¤ì(€€€€€€€½¹ÍĞ…Ñ¥½¸€ô…Ñ¥½¹½È¡‰±½¬¤ì(€€€€€€€¥˜€¡…Ñ¥½¸¤…Ñ¥½¹Ì¹ÁÕÍ ¡ì‰±½¬°…Ñ¥½¸°­•äè¹Õ±°ô¤ì(€€€€€€€½¹Ñ¥¹Õ”ì(€€€€€ô(€€€€€™½È€¡½¹ÍĞ•¹ÑÉä½˜…Ñ¥Ù•A…Ñ¡İ…åÌ¤ì(€€€€€€€¥˜€¡•¹ÑÉä¹‰±½¬¹¥€„ôô‰±½¬¹¥ñğ€…•¹ÑÉä¹…Ñ¥Ù”¤½¹Ñ¥¹Õ”ì(€€€€€€€½¹ÍĞ…Ñ¥½¸€ôÉ•ÍÁ½¹Í•Ñ¥½¹½È¡•¹ÑÉä¹Á…Ñ¡İ…ä¹µ½Ñ¥Ù”¤ì(€€€€€€€¥˜€¡…Ñ¥½¸¤…Ñ¥½¹Ì¹ÁÕÍ ¡ì‰±½¬°…Ñ¥½¸°­•äè•¹ÑÉä¹­•äô¤ì(€€€€€ô(€€€ô(€€€™½È€¡½¹ÍĞì‰±½¬°…Ñ¥½¸°­•äô½˜…Ñ¥½¹Ì¤ì(€€€€€¥˜€ …ÍÑ…Ñ”¹‰±½­Ì¹Í½µ”¡ÕÉÉ•¹Ğ€ôøÕÉÉ•¹Ğ¹¥€ôôô‰±½¬¹¥¤¤½¹Ñ¥¹Õ”ì(€€€€€€¼¼-••À„‘É…•½±•´ÌÉ•ÍÁ½¹Í”‰•¡…Ù¥½È±¥Ù”°•á•ÁĞÉ…‰‰¥¹œè„É…ˆ(€€€€€€¼¼‘ÕÉ¥¹œÑ¡”ÕÍ•ÈÌ‘É…œ…¸ÁÕ±°…¹½Ñ¡•È±½…İ…ä™É½´Ñ¡”Á½¥¹Ñ•È¸(€€€€€¥˜€¡…Ñ¥½¸¹ÑåÁ”€ôôô€‰É…ˆˆ€˜˜ÍÑ…Ñ”¹‘É…œü¹‰±½¬¹¥€ôôô‰±½¬¹¥¤½¹Ñ¥¹Õ”ì(€€€€€¥˜€¡­•ä€ôôô¹Õ±°¤ì(€€€€€€€¥˜€¡¹½Ü€ğ€¡‰±½¬¹¹•áÑÑ¥½¹Ğñğ€À¤¤½¹Ñ¥¹Õ”ì(€€€€€€€‰±½¬¹¹•áÑÑ¥½¹Ğ€ô¹½Ü€¬€ÜÀÀì(€€€€€ô•±Í”ì(€€€€€€€½¹ÍĞ¹•áÑÑ¥½¹Ì€ô‰±½¬¹¹•áÑA…Ñ¡Ñ¥½¹Ğñğ€¡‰±½¬¹¹•áÑA…Ñ¡Ñ¥½¹Ğ€ôíô¤ì(€€€€€€€¥˜€¡¹½Ü€ğ€¡¹•áÑÑ¥½¹Ím­•åtñğ€À¤¤½¹Ñ¥¹Õ”ì(€€€€€€€¹•áÑÑ¥½¹Ím­•åt€ô¹½Ü€¬€ÜÀÀì(€€€€€ô(€€€€€½¹ÍĞ¡…¹•€ô…Ñ¥½¸¹ÑåÁ”€ôôô€‰É…ˆˆ(€€€€€€€€üÉ…‰‘©…•¹Ñ±…ä¡‰±½¬°…Ñ¥½¸¹¡…¹‘M¥‘”°…Ñ¥½¸¹‘¥É•Ñ¥½¸¤(€€€€€€€€è‘É½Á!•±‘±…ä¡‰±½¬°…Ñ¥½¸¹¡…¹‘M¥‘”°…Ñ¥½¸¹‘¥É•Ñ¥½¸¤ì(€€€€€¥˜€¡¡…¹•¤¡…¹‘¡…¹•€ôÑÉÕ”ì(€€€ô(€€€½¹ÍĞµ½Ù•ÉÌ€ôÍÑ…Ñ”¹‰±½­Ì¹µ…À¡‰±½¬€ôø€¡ì‰±½¬°µ½Ù•µ•¹Ğèµ½Ù•µ•¹Ñ½È¡‰±½¬¤ô¤¤(€€€€€€¹™¥±Ñ•È¡¥Ñ•´€ôø¥Ñ•´¹µ½Ù•µ•¹Ğ¤ì(€€€½¹ÍĞ™É…µ”€ô¥µ…•É…µ” ¤ì((€€€™½È€¡½¹ÍĞì‰±½¬°µ½Ù•µ•¹Ğô½˜µ½Ù•ÉÌ¤ì(€€€€€¥˜€¡ÍÑ…Ñ”¹‘É…œü¹‰±½¬¹¥€ôôô‰±½¬¹¥ñğ€¡µ½Ù•µ•¹Ğ¹½¹‘¥Ñ¥½¹•€˜˜€…‰±½¬¹Í•¹Í•Ñ¥Ù”¤¤½¹Ñ¥¹Õ”ì(€€€€€½¹ÍĞµ½Ù•µ•¹Ñ%€ôµ½Ù•µ•¹Ğ¹…Ñ¥½¸¹¥ì(€€€€€¥˜€¡µ½Ù•µ•¹Ñ%€ôôô€‰‘¼µµ½Ù”µÉ…¹‘½´ˆ€˜˜€ …‰±½¬¹¹•áÑ¥É•Ñ¥½¹¡…¹”ñğ¹½Ü€øô‰±½¬¹¹•áÑ¥É•Ñ¥½¹¡…¹”¤¤ì(€€€€€€€¡½½Í•I…¹‘½µ¥É•Ñ¥½¸¡‰±½¬°¹½Ü¤ì(€€€€€ô(€€€€€±•Ğ‘¥É•Ñ¥½¸€ôµ½Ù•µ•¹Ñ%€ôôô€‰‘¼µµ½Ù”µ±•™Ğˆ(€€€€€€€€üìàè€´Ä°äè€Àô(€€€€€€€€èµ½Ù•µ•¹Ñ%€ôôô€‰‘¼µµ½Ù”µÉ¥¡Ğˆ(€€€€€€€€€€üìàè€Ä°äè€Àô(€€€€€€€€€€èµ½Ù•µ•¹Ñ%€ôôô€‰‘¼µµ½Ù”µÕÀˆ(€€€€€€€€€€€€üìàè€À°äè€´Äô(€€€€€€€€€€€€èµ½Ù•µ•¹Ñ%€ôôô€‰‘¼µµ½Ù”µ‘½İ¸ˆ(€€€€€€€€€€€€€€üìàè€À°äè€Äô(€€€€€€€€€€€€€€è‰±½¬¹É…¹‘½µ¥É•Ñ¥½¸ì(€€€€€±•Ğ¹•áĞ€ôµ½Ù•µ•¹ÑA½Í¥Ñ¥½¸¡‰±½¬°‘¥É•Ñ¥½¸°•±…ÁÍ•°™É…µ”¤ì(€€€€€¥˜€¡¹•áĞ¹‰±½­•€˜˜µ½Ù•µ•¹Ñ%€ôôô€‰‘¼µµ½Ù”µÉ…¹‘½´ˆ¤ì(€€€€€€€½¹ÍĞ½Á•¹¥É•Ñ¥½¹Ì€ôÍ¡Õ™™±•‘…É‘¥¹…±¥É•Ñ¥½¹Ì ¤(€€€€€€€€€€¹™¥±Ñ•È¡…¹‘¥‘…Ñ”€ôø…¹‘¥‘…Ñ”¹à€„ôô‘¥É•Ñ¥½¸¹àñğ…¹‘¥‘…Ñ”¹ä€„ôô‘¥É•Ñ¥½¸¹ä¤(€€€€€€€€€€¹™¥±Ñ•È¡…¹‘¥‘…Ñ”€ôø€…µ½Ù•µ•¹ÑA½Í¥Ñ¥½¸¡‰±½¬°…¹‘¥‘…Ñ”°•±…ÁÍ•°™É…µ”¤¹‰±½­•¤ì(€€€€€€€¥˜€¡½Á•¹¥É•Ñ¥½¹Ì¹±•¹Ñ ¤ì(€€€€€€€€€‘¥É•Ñ¥½¸€ô½Á•¹¥É•Ñ¥½¹ÍlÁtì(€€€€€€€€€‰±½¬¹É…¹‘½µ¥É•Ñ¥½¸€ô‘¥É•Ñ¥½¸ì(€€€€€€€€€‰±½¬¹¹•áÑ¥É•Ñ¥½¹¡…¹”€ô¹½Ü€¬€ÄÀÀÀ€¬5…Ñ ¹É…¹‘½´ ¤€¨€ÄĞÀÀì(€€€€€€€€€¹•áĞ€ôµ½Ù•µ•¹ÑA½Í¥Ñ¥½¸¡‰±½¬°‘¥É•Ñ¥½¸°•±…ÁÍ•°™É…µ”¤ì(€€€€€€€ô(€€€€€ô(€€€€€½¹ÍĞìàè¹•áÑ`°äè¹•áÑd°‰±½­•ô€ô¹•áĞì(€€€€€¥˜€¡‰±½­•¤ì(€€€€€€€¥˜€ …‰±½¬¹µ½Ù•µ•¹Ñ	±½­•¤ì(€€€€€€€€€‰±½¬¹µ½Ù•µ•¹Ñ	±½­•€ôÑÉÕ”ì(€€€€€€€€€½¹ÍĞ½‰ÍÑÉÕÑ¥½¸€ôµ½Ù•µ•¹Ñ%€ôôô€‰‘¼µµ½Ù”µÉ…¹‘½´ˆ(€€€€€€€€€€€€ü€‰‰±½­•¥¸•Ù•Éä‘¥É•Ñ¥½¸‰ä…¹½Ñ¡•È±½½ÈÑ¡”±•…É¥¹œ•‘”ˆ(€€€€€€€€€€€€è€‰‰±½­•‰ä…¹½Ñ¡•È±½½ÈÑ¡”±•…É¥¹œ•‘”ˆì(€€€€€€€€€Í•ÑMÑ…ÑÕÌ¡€‘í™…•1…‰•°¡‰±½¬¹½¹Ñ•¹ÑÌ¥ô­••ÁÌ…ÑÑ•µÁÑ¥¹œ°‰ÕĞÑ¡¥Ì±…ä¥Ì€‘í½‰ÍÑÉÕÑ¥½¹ô¹€¤ì(€€€€€€€ô(€€€€€€€½¹Ñ¥¹Õ”ì(€€€€€ô(€€€€€¥˜€¡‰±½¬¹µ½Ù•µ•¹Ñ	±½­•¤ì(€€€€€€€‰±½¬¹µ½Ù•µ•¹Ñ	±½­•€ô™…±Í”ì(€€€€€€€Í•ÑMÑ…ÑÕÌ¡€‘í™…•1…‰•°¡‰±½¬¹½¹Ñ•¹ÑÌ¥ô¥Ìµ½Ù¥¹œ……¥¸¹€¤ì(€€€€€ô(€€€€€‰±½¬¹à€ô¹•áÑ`ì(€€€€€‰±½¬¹ä€ô¹•áÑdì(€€€€€µ½Ù•€ôÑÉÕ”ì(€€€ô(€€€½¹ÍĞÉ•‘Õ•‘5½Ñ¥½¸€ôİ¥¹‘½Ü¹µ…Ñ¡5•‘¥„ü¸ ˆ¡ÁÉ•™•ÉÌµÉ•‘Õ•µµ½Ñ¥½¸èÉ•‘Õ”¤ˆ¤ü¹µ…Ñ¡•Ì€ôôôÑÉÕ”ì(€€€½¹ÍĞÍ¡½Õ±‘AÕ±Í”€ôÍ•¹Í½ÉÌ¹Í½µ” ¡ì‰±½¬ô¤€ôø‰±½¬¹Í•¹Í•Ñ¥Ù”¤€˜˜€…É•‘Õ•‘5½Ñ¥½¸ì(€€€¥˜€¡µ½Ù•ñğ¡…¹‘¡…¹•ñğÍ¥¡Ñ¡…¹•ñğÍ¡½Õ±‘AÕ±Í”¤‘É…İ5…À ¤ì(€ô((€™Õ¹Ñ¥½¸¡½½Í•I…¹‘½µ¥É•Ñ¥½¸¡‰±½¬°¹½Ü¤ì(€€€½¹ÍĞ‘¥É•Ñ¥½¹Ì€ôÍ¡Õ™™±•‘…É‘¥¹…±¥É•Ñ¥½¹Ì ¤ì(€€€‰±½¬¹É…¹‘½µ¥É•Ñ¥½¸€ô‘¥É•Ñ¥½¹Ím5…Ñ ¹™±½½È¡5…Ñ ¹É…¹‘½´ ¤€¨‘¥É•Ñ¥½¹Ì¹±•¹Ñ ¥tì(€€€‰±½¬¹¹•áÑ¥É•Ñ¥½¹¡…¹”€ô¹½Ü€¬€ÄÀÀÀ€¬5…Ñ ¹É…¹‘½´ ¤€¨€ÄĞÀÀì(€ô((€™Õ¹Ñ¥½¸É…‰‘©…•¹Ñ±…ä¡½±•´°É•ÅÕ•ÍÑ•‘!…¹‘M¥‘”°É•ÅÕ•ÍÑ•‘¥É•Ñ¥½¸¤ì(€€€½¹ÍĞ¡…¹‘Ì€ô½±•´¹¡•±‘%Ñ•µÌñğ€¡½±•´¹¡•±‘%Ñ•µÌ€ôì±•™Ğè¹Õ±°°É¥¡Ğè¹Õ±°ô¤ì(€€€½¹ÍĞ…Ù…¥±…‰±•M¥‘•Ì€ôl‰±•™Ğˆ°€‰É¥¡Ğ‰t¹™¥±Ñ•È¡Í¥‘”€ôø€…¡…¹‘ÍmÍ¥‘•t¤ì(€€€¥˜€¡É•ÅÕ•ÍÑ•‘!…¹‘M¥‘”€˜˜¡…¹‘ÍmÉ•ÅÕ•ÍÑ•‘!…¹‘M¥‘•t¤ì(€€€€€Í•ÑMÑ…ÑÕÌ¡Q¡”€‘íÉ•ÅÕ•ÍÑ•‘!…¹‘M¥‘•ô¡…¹¥Ì™Õ±°ì¥Ğ…¹¹½ĞÉ…ˆ…¹½Ñ¡•È±½¹€¤ì(€€€€€É•ÑÕÉ¸™…±Í”ì(€€€ô(€€€½¹ÍĞ•±°€ôÍÑ…Ñ”¹±…å½ÕĞ¹•±°€¬€Äì(€€€½¹ÍĞ•¹Ñ•É`€ô½±•´¹à€¬ÍÑ…Ñ”¹±…å½ÕĞ¹Í¥é”€¼€Èì(€€€½¹ÍĞ•¹Ñ•Éd€ô½±•´¹ä€¬ÍÑ…Ñ”¹±…å½ÕĞ¹Í¥é”€¼€Èì(€€€½¹ÍĞ…¹‘¥‘…Ñ•Ì€ôÍÑ…Ñ”¹‰±½­Ì¹™¥±Ñ•È¡½Ñ¡•È€ôøì(€€€€€€¼¼A½¥¹Ñ•Èµ¡•±Á¥••Ì‰•±½¹œÑ¼Ñ¡”Á±…å•ÈÌÕÉÉ•¹Ğ•ÍÑÕÉ”¸¼¹½Ğ(€€€€€€¼¼±•Ğ…¸…ÕÑ½¹½µ½ÕÌÉ…ˆÁÕ±°„‘É…•±½½È½±•´…İ…ä™É½´Ñ¡•´¸(€€€€€¥˜€¡½Ñ¡•È¹¥€ôôô½±•´¹¥ñğ½Ñ¡•È¹Õ¹Á±…•ñğÍÑ…Ñ”¹‘É…œü¹‰±½¬¹¥€ôôô½Ñ¡•È¹¥¤É•ÑÕÉ¸™…±Í”ì(€€€€€½¹ÍĞ‘à€ô½Ñ¡•È¹à€¬ÍÑ…Ñ”¹±…å½ÕĞ¹Í¥é”€¼€È€´•¹Ñ•É`ì(€€€€€½¹ÍĞ‘ä€ô½Ñ¡•È¹ä€¬ÍÑ…Ñ”¹±…å½ÕĞ¹Í¥é”€¼€È€´•¹Ñ•Édì(€€€€€É•ÑÕÉ¸€¡5…Ñ ¹…‰Ì¡‘à¤€ø€À¸Ôñğ5…Ñ ¹…‰Ì¡‘ä¤€ø€À¸Ô¤€˜˜5…Ñ ¹…‰Ì¡‘à¤€ğô•±°€˜˜5…Ñ ¹…‰Ì¡‘ä¤€ğô•±°ì(€€€ô¤¹µ…À¡½Ñ¡•È€ôøì(€€€€€½¹ÍĞ‘à€ô½Ñ¡•È¹à€¬ÍÑ…Ñ”¹±…å½ÕĞ¹Í¥é”€¼€È€´•¹Ñ•É`ì(€€€€€½¹ÍĞ‘ä€ô½Ñ¡•È¹ä€¬ÍÑ…Ñ”¹±…å½ÕĞ¹Í¥é”€¼€È€´•¹Ñ•Édì(€€€€€É•ÑÕÉ¸ì½Ñ¡•È°‘à°‘ä°‘¥ÍÑ…¹”è‘à€¨‘à€¬‘ä€¨‘äôì(€€€ô¤¹™¥±Ñ•È¡…¹‘¥‘…Ñ”€ôøì(€€€€€¥˜€ …É•ÅÕ•ÍÑ•‘¥É•Ñ¥½¸¤É•ÑÕÉ¸ÑÉÕ”ì(€€€€€É•ÑÕÉ¸É•ÅÕ•ÍÑ•‘¥É•Ñ¥½¸€ôôô€‰±•™Ğˆ€ü…¹‘¥‘…Ñ”¹‘à€ğ€´À¸Ô€è…¹‘¥‘…Ñ”¹‘à€ø€À¸Ôì(€€€ô¤¹Í½ÉĞ ¡„°ˆ¤€ôø„¹‘¥ÍÑ…¹”€´ˆ¹‘¥ÍÑ…¹”¤ì((€€€½¹ÍĞ…¹‘¥‘…Ñ”€ô…¹‘¥‘…Ñ•Ì¹™¥¹  ¤€ôø…Ù…¥±…‰±•M¥‘•Ì¹±•¹Ñ €ø€À¤ì(€€€¥˜€ ……¹‘¥‘…Ñ”¤ì(€€€€€½¹ÍĞ‘¥É•Ñ¥½¹5•ÍÍ…”€ôÉ•ÅÕ•ÍÑ•‘¥É•Ñ¥½¸€ü€½¸Ñ¡”€‘íÉ•ÅÕ•ÍÑ•‘¥É•Ñ¥½¹ôÍ¥‘•€€è€ˆ¹•…É‰äˆì(€€€€€Í•ÑMÑ…ÑÕÌ¡É•ÅÕ•ÍÑ•‘!…¹‘M¥‘”(€€€€€€€€üQ¡•É”¥Ì¹¼…‘©…•¹Ğ±…ä‘í‘¥É•Ñ¥½¹5•ÍÍ…•ô™½ÈÑ¡”€‘íÉ•ÅÕ•ÍÑ•‘!…¹‘M¥‘•ô¡…¹¹€(€€€€€€€€è…Ù…¥±…‰±•M¥‘•Ì¹±•¹Ñ €üQ¡•É”¥Ì¹¼…‘©…•¹Ğ±…ä‘í‘¥É•Ñ¥½¹5•ÍÍ…•ôÑ¡…Ğ…¸‰”É…‰‰•¹€€è€‰	½Ñ ¡…¹‘Ì…É”™Õ±°ì¹¼µ½É”±…ä…¸‰”É…‰‰•¸ˆ¤ì(€€€€€É•ÑÕÉ¸™…±Í”ì(€€€ô(€€€½¹ÍĞÍ¥‘”€ôÉ•ÅÕ•ÍÑ•‘!…¹‘M¥‘”ñğ…Ù…¥±…‰±•M¥‘•Ím5…Ñ ¹™±½½È¡5…Ñ ¹É…¹‘½´ ¤€¨…Ù…¥±…‰±•M¥‘•Ì¹±•¹Ñ ¥tì(€€€¡…¹‘ÍmÍ¥‘•t€ô…¹‘¥‘…Ñ”¹½Ñ¡•Èì(€€€ÍÑ…Ñ”¹‰±½­Ì€ôÍÑ…Ñ”¹‰±½­Ì¹™¥±Ñ•È¡½Ñ¡•È€ôø½Ñ¡•È¹¥€„ôô…¹‘¥‘…Ñ”¹½Ñ¡•È¹¥¤ì(€€€¥˜€¡ÍÑ…Ñ”¹Í•±•Ñ•‘%€ôôô…¹‘¥‘…Ñ”¹½Ñ¡•È¹¥¤ÍÑ…Ñ”¹Í•±•Ñ•‘%€ô¹Õ±°ì(€€€¥˜€¡ÍÑ…Ñ”¹™½ÕÍ•‘%€ôôô…¹‘¥‘…Ñ”¹½Ñ¡•È¹¥¤ÍÑ…Ñ”¹™½ÕÍ•‘%€ô¹Õ±°ì(€€€¥˜€¡ÍÑ…Ñ”¹Ñ…É•Ñ%€ôôô…¹‘¥‘…Ñ”¹½Ñ¡•È¹¥¤ÍÑ…Ñ”¹Ñ…É•Ñ%€ô¹Õ±°ì(€€€¥˜€¡ÍÑ…Ñ”¹Í•±•Ñ•‘%€ôôô½±•´¹¥¤É•¹‘•É•Ñ…¥° ¤ì(€€€½¹ÍĞ™É½´€ôÉ•ÅÕ•ÍÑ•‘¥É•Ñ¥½¸€ü€™É½´Ñ¡”€‘íÉ•ÅÕ•ÍÑ•‘¥É•Ñ¥½¹ôÍ¥‘•€€è€ˆˆì(€€€Í•ÑMÑ…ÑÕÌ¡€‘í™…•1…‰•°¡½±•´¹½¹Ñ•¹ÑÌ¥ôÉ…‰‰•€‘í™…•1…‰•°¡…¹‘¥‘…Ñ”¹½Ñ¡•È¹½¹Ñ•¹ÑÌ¥ô‘í™É½µô¥¹Ñ¼¥ÑÌ€‘íÍ¥‘•ô¡…¹¹€¤ì(€€€É•ÑÕÉ¸ÑÉÕ”ì(€ô((€™Õ¹Ñ¥½¸‘É½Á!•±‘±…ä¡½±•´°É•ÅÕ•ÍÑ•‘!…¹‘M¥‘”°É•ÅÕ•ÍÑ•‘¥É•Ñ¥½¸¤ì(€€€½¹ÍĞ¡…¹‘Ì€ô½±•´¹¡•±‘%Ñ•µÌñğ€¡½±•´¹¡•±‘%Ñ•µÌ€ôì±•™Ğè¹Õ±°°É¥¡Ğè¹Õ±°ô¤ì(€€€½¹ÍĞ¡½±‘¥¹œ€ôl‰±•™Ğˆ°€‰É¥¡Ğ‰t¹™¥±Ñ•È¡Í¥‘”€ôø¡…¹‘ÍmÍ¥‘•t¤ì(€€€½¹ÍĞÍ¥‘”€ôÉ•ÅÕ•ÍÑ•‘!…¹‘M¥‘”ñğ¡½±‘¥¹m5…Ñ ¹™±½½È¡5…Ñ ¹É…¹‘½´ ¤€¨¡½±‘¥¹œ¹±•¹Ñ ¥tì(€€€¥˜€ …Í¥‘”ñğ€…¡…¹‘ÍmÍ¥‘•t¤ì(€€€€€Í•ÑMÑ…ÑÕÌ¡É•ÅÕ•ÍÑ•‘!…¹‘M¥‘”€üQ¡”€‘íÉ•ÅÕ•ÍÑ•‘!…¹‘M¥‘•ô¡…¹¥Ì•µÁÑä¹€€è€‰Q¡•É”¥Ì¹¼¡•±±…äÑ¼‘É½À¸ˆ¤ì(€€€€€É•ÑÕÉ¸™…±Í”ì(€€€ô(€€€½¹ÍĞ¡•±‘±½€ô¡…¹‘ÍmÍ¥‘•tì(€€€½¹ÍĞ½¹Ñ•¹ÑÌ€ô¡•±‘±½¹½¹Ñ•¹ÑÌì(€€€½¹ÍĞ‰±½¬€ôì(€€€€€€¸¸¹¡•±‘±½°(€€€€€¥è¡•±µ‘É½À´‘ì¬­ÍÑ…Ñ”¹Á…±•ÑÑ•½Áå½Õ¹Ñõ€°(€€€€€¡•±‘%Ñ•µÌèì±•™Ğè¡•±‘±½¹¡•±‘%Ñ•µÌü¹±•™Ğñğ¹Õ±°°É¥¡Ğè¡•±‘±½¹¡•±‘%Ñ•µÌü¹É¥¡Ğñğ¹Õ±°ô(€€€ôì(€€€½¹ÍĞÁ±…•µ•¹ÑM¥‘”€ôÉ•ÅÕ•ÍÑ•‘¥É•Ñ¥½¸ñğÍ¥‘”ì(€€€‰±½¬¹à€ô½±•´¹à€¬€¡Á±…•µ•¹ÑM¥‘”€ôôô€‰±•™Ğˆ€ü€µÍÑ…Ñ”¹±…å½ÕĞ¹Í¥é”€èÍÑ…Ñ”¹±…å½ÕĞ¹Í¥é”¤ì(€€€‰±½¬¹ä€ô½±•´¹äì(€€€ÍÑ…Ñ”¹‰±½­Ì¹ÁÕÍ ¡‰±½¬¤ì(€€€¥˜€ …‘É½Á%¹±•…É¥¹œ¡‰±½¬°‰±½¬¹à°‰±½¬¹ä¤¤ì(€€€€€ÍÑ…Ñ”¹‰±½­Ì€ôÍÑ…Ñ”¹‰±½­Ì¹™¥±Ñ•È¡½Ñ¡•È€ôø½Ñ¡•È¹¥€„ôô‰±½¬¹¥¤ì(€€€€€Í•ÑMÑ…ÑÕÌ ‰Q¡•É”¥Ì¹¼½Á•¸ÍÁ…”¥¸Ñ¡”±•…É¥¹œÑ¼‘É½ÀÑ¡”¡•±±…ä½¸Ñ¡…ĞÍ¥‘”¸ˆ¤ì(€€€€€É•ÑÕÉ¸™…±Í”ì(€€€ô(€€€¡…¹‘ÍmÍ¥‘•t€ô¹Õ±°ì(€€€¥˜€¡ÍÑ…Ñ”¹Í•±•Ñ•‘%€ôôô½±•´¹¥¤É•¹‘•É•Ñ…¥° ¤ì(€€€½¹ÍĞ‘¥É•Ñ¥½¹Q•áĞ€ôÉ•ÅÕ•ÍÑ•‘¥É•Ñ¥½¸€ü€½¸Ñ¡”€‘íÉ•ÅÕ•ÍÑ•‘¥É•Ñ¥½¹ôÍ¥‘•€€è€ˆˆì(€€€Í•ÑMÑ…ÑÕÌ¡€‘í™…•1…‰•°¡½±•´¹½¹Ñ•¹ÑÌ¥ô‘É½ÁÁ•€‘í™…•1…‰•°¡½¹Ñ•¹ÑÌ¥ô™É½´¥ÑÌ€‘íÍ¥‘•ô¡…¹‘í‘¥É•Ñ¥½¹Q•áÑô¹€¤ì(€€€É•ÑÕÉ¸ÑÉÕ”ì(€ô((€™Õ¹Ñ¥½¸Í¡Õ™™±•‘…É‘¥¹…±¥É•Ñ¥½¹Ì ¤ì(€€€É•ÑÕÉ¸Í¡Õ™™±”¡mìàè€Ä°äè€Àô°ìàè€´Ä°äè€Àô°ìàè€À°äè€Äô°ìàè€À°äè€´Äõt¤ì(€ô((€™Õ¹Ñ¥½¸µ½Ù•µ•¹ÑA½Í¥Ñ¥½¸¡‰±½¬°‘¥É•Ñ¥½¸°•±…ÁÍ•°™É…µ”¤ì(€€€½¹ÍĞ¹•áÑ`€ô5…Ñ ¹µ…à À°5…Ñ ¹µ¥¸¡ÍÑ…Ñ”¹±…å½ÕĞ¹İ¥‘Ñ €´ÍÑ…Ñ”¹±…å½ÕĞ¹Í¥é”°‰±½¬¹à€¬‘¥É•Ñ¥½¸¹à€¨µ½Ù•µ•¹ÑMÁ••€¨•±…ÁÍ•¤¤ì(€€€½¹ÍĞ¹•áÑd€ô5…Ñ ¹µ…à À°5…Ñ ¹µ¥¸¡ÍÑ…Ñ”¹±…å½ÕĞ¹¡•¥¡Ğ€´ÍÑ…Ñ”¹±…å½ÕĞ¹Í¥é”°‰±½¬¹ä€¬‘¥É•Ñ¥½¸¹ä€¨µ½Ù•µ•¹ÑMÁ••€¨•±…ÁÍ•¤¤ì(€€€½¹ÍĞ‰±½­•€ô€¡¹•áÑ`€ôôô‰±½¬¹à€˜˜¹•áÑd€ôôô‰±½¬¹ä¤ñğ(€€€€€€…¥ÍM…™••±°¡¹•áÑ`°¹•áÑd°ÍÑ…Ñ”¹±…å½ÕĞ¹Í¥é”°™É…µ”¤ñğ(€€€€€½Ù•É±…ÁÍ¹½Ñ¡•É	±½¬¡‰±½¬°¹•áÑ`°¹•áÑd¤ì(€€€É•ÑÕÉ¸ìàè¹•áÑ`°äè¹•áÑd°‰±½­•ôì(€ô((€™Õ¹Ñ¥½¸ÍÑ…ÉÑÑ¥Ù•5½Ù•µ•¹Ğ ¤ì(€€€¥˜€¡µ½Ù•µ•¹ÑQ¥µ•Èñğ€…ÍÑ…Ñ”¹‰±½­Ì¹Í½µ”¡¡…ÍÑ¥Ù•AÉ½Ñ½ÑåÁ•	•¡…Ù¥½È¤¤É•ÑÕÉ¸ì(€€€±…ÍÑ5½Ù•µ•¹ÑQ¥µ”€ôÁ•É™½Éµ…¹”¹¹½Ü ¤ì(€€€µ½Ù•µ•¹ÑQ¥µ•È€ôİ¥¹‘½Ü¹Í•Ñ%¹Ñ•ÉÙ…°¡Ñ¥­Ñ¥Ù•5½Ù•µ•¹Ğ°€ÔÀ¤ì(€ô((€™Õ¹Ñ¥½¸ÍÑ½ÁÑ¥Ù•5½Ù•µ•¹Ğ ¤ì(€€€¥˜€¡µ½Ù•µ•¹ÑQ¥µ•È¤İ¥¹‘½Ü¹±•…É%¹Ñ•ÉÙ…°¡µ½Ù•µ•¹ÑQ¥µ•È¤ì(€€€µ½Ù•µ•¹ÑQ¥µ•È€ô¹Õ±°ì(€€€±…ÍÑ5½Ù•µ•¹ÑQ¥µ”€ô¹Õ±°ì(€ô((€™Õ¹Ñ¥½¸É•ÍÕµ•Ñ¥Ù•5½Ù•µ•¹Ñ™Ñ•ÉÉ…œ¡‰±½¬¤ì(€€€¥˜€¡‰±½¬¤‰±½¬¹µ½Ù•µ•¹Ñ	±½­•€ô™…±Í”ì(€€€¥˜€¡µ½Ù•µ•¹ÑQ¥µ•È¤İ¥¹‘½Ü¹±•…É%¹Ñ•ÉÙ…°¡µ½Ù•µ•¹ÑQ¥µ•È¤ì(€€€µ½Ù•µ•¹ÑQ¥µ•È€ô¹Õ±°ì(€€€±…ÍÑ5½Ù•µ•¹ÑQ¥µ”€ô¹Õ±°ì(€€€ÍÑ…ÉÑÑ¥Ù•5½Ù•µ•¹Ğ ¤ì(€ô((€™Õ¹Ñ¥½¸Í•±•Ñ	±½¬¡‰±½¬¤ì(€€€¥˜€¡ÍÑ…Ñ”¹Í•±•Ñ•‘%€ôôô‰±½¬¹¥¤ì(€€€€€ÍÑ…Ñ”¹Í•±•Ñ•‘%€ô¹Õ±°ì(€€€€€É•¹‘•É•Ñ…¥° ¤ì(€€€€€‘É…İ5…À ¤ì(€€€€€Í•ÑMÑ…ÑÕÌ ‰M•±•Ñ¥½¸±•…É•¸ˆ¤ì(€€€€€É•ÑÕÉ¸ì(€€€ô(€€€ÍÑ…Ñ”¹Í•±•Ñ•‘%€ô‰±½¬¹¥ì(€€€ÍÑ…Ñ”¹™½ÕÍ•‘%€ô‰±½¬¹¥ì(€€€É•¹‘•É•Ñ…¥° ¤ì(€€€‘É…İ5…À ¤ì(€€€Í•ÑMÑ…ÑÕÌ¡€‘í™…•1…‰•°¡‰±½¬¹½¹Ñ•¹ÑÌ¥ôÍ•±•Ñ•¸É…œ¥Ğ½¹Ñ¼…¹½Ñ¡•È±½Ñ¼½µ‰¥¹”¹€¤ì(€ô((€™Õ¹Ñ¥½¸½µ‰¥¹”¡Ñ…É•Ğ°‘É½ÁÁ•¤ì(€€€¥˜€¡Ñ…É•Ğ¹¥€ôôô‘É½ÁÁ•¹¥¤É•ÑÕÉ¸ì(€€€½¹ÍĞÉ•ÍÕ±Ğ€ôÉ•ÍÕ±ÑáÁÉ•ÍÍ¥½¸¡Ñ…É•Ğ¹½¹Ñ•¹ÑÌ°‘É½ÁÁ•¹½¹Ñ•¹ÑÌ¤ì(€€€¥˜€ …É•ÍÕ±Ğ¤ì(€€€€€ÍÑ…Ñ”¹Í•±•Ñ•‘%€ô¹Õ±°ì(€€€€€É•¹‘•É•Ñ…¥° ¤ì(€€€€€‘É…İ5…À ¤ì(€€€€€½¹ÍĞÉ•…Í½¸€ôÉ•Á•…ÑÍ=Á•É…Ñ½É]½É¡Ñ…É•Ğ¹½¹Ñ•¹ÑÌ°‘É½ÁÁ•¹½¹Ñ•¹ÑÌ¤(€€€€€€€€ü€‰¸½Á•É…Ñ½È…¹¹½Ğ‰”…‘‘•……¥¸Ñ¼…¸•áÁÉ•ÍÍ¥½¸Ñ¡…Ğ…±É•…‘ä½¹Ñ…¥¹Ì¥Ğ¸	½Ñ ±½‘ÌÍÑ…ä¥¸Á±…”¸ˆ(€€€€€€€€è9¼½¹™¥Éµ•½µ‰¥¹…Ñ¥½¸™½È€‘í™…•1…‰•°¡Ñ…É•Ğ¹½¹Ñ•¹ÑÌ¥ô€¬€‘í™…•1…‰•°¡‘É½ÁÁ•¹½¹Ñ•¹ÑÌ¥ô¸	½Ñ ±½‘ÌÍÑ…ä¥¸Á±…”¹€ì(€€€€€Í•ÑMÑ…ÑÕÌ¡É•…Í½¸¤ì(€€€€€É•ÑÕÉ¸™…±Í”ì(€€€ô((€€€½¹ÍĞÑ…É•Ñ1…‰•°€ô™…•1…‰•°¡Ñ…É•Ğ¹½¹Ñ•¹ÑÌ¤ì(€€€½¹ÍĞ‘É½ÁÁ•‘1…‰•°€ô™…•1…‰•°¡‘É½ÁÁ•¹½¹Ñ•¹ÑÌ¤ì(€€€Ñ…É•Ğ¹½¹Ñ•¹ÑÌ€ôÉ•ÍÕ±Ğì(€€€ÍÑ…Ñ”¹‰±½­Ì€ôÍÑ…Ñ”¹‰±½­Ì¹™¥±Ñ•È¡‰±½¬€ôø‰±½¬¹¥€„ôô‘É½ÁÁ•¹¥¤ì(€€€ÍÑ…Ñ”¹Í•±•Ñ•‘%€ôÑ…É•Ğ¹¥ì(€€€ÍÑ…Ñ”¹™½ÕÍ•‘%€ôÑ…É•Ğ¹¥ì(€€€É•¹‘•É•Ñ…¥° ¤ì(€€€‘É…İ5…À ¤ì(€€€½¹ÍĞµ½Ù•µ•¹Ñ%€ô‘•ÍÉ¥‰”¡Ñ…É•Ğ¹½¹Ñ•¹ÑÌ¤¹¥ì(€€€¥˜€¡l‰‘¼µµ½Ù”µ±•™Ğˆ°€‰‘¼µµ½Ù”µÉ¥¡Ğˆ°€‰‘¼µµ½Ù”µÕÀˆ°€‰‘¼µµ½Ù”µ‘½İ¸ˆ°€‰‘¼µµ½Ù”µÉ…¹‘½´‰t¹¥¹±Õ‘•Ì¡µ½Ù•µ•¹Ñ%¤¤ì(€€€€€½¹ÍĞµ½Ù•µ•¹Ñ9½Ñ”€ôµ½Ù•µ•¹Ñ%€ôôô€‰‘¼µµ½Ù”µÉ…¹‘½´ˆ(€€€€€€€€ü€‰Q¡¥ÌÑ•¹Ñ…Ñ¥Ù”ÁÉ½Ñ½ÑåÁ”Õ•ÍÌİ…¹‘•ÉÌÍ±½İ±ä¥¸É…¹‘½´‘¥É•Ñ¥½¹ÌìÑ¡”…µ”ÉÕ±”¥Ì¹½ĞÍ•ÑÑ±•¸ˆ(€€€€€€€€èQ¡¥ÌÁÉ½Ù¥Í¥½¹…°…Ñ¥½¸­••ÁÌÑÉå¥¹œÑ¼µ½Ù”Í±½İ±ä€‘íµ½Ù•µ•¹Ñ%¹Í±¥” ‰‘¼µµ½Ù”´ˆ¹±•¹Ñ ¥ôìÑ¡”µ½Ù•µ•¹ĞÉÕ±”É•µ…¥¹Ì½Á•¸¹€ì(€€€€€Í•ÑMÑ…ÑÕÌ¡€‘íÑ…É•Ñ1…‰•±ô€¬€‘í‘É½ÁÁ•‘1…‰•±ôƒŠH€‘í™…•1…‰•°¡Ñ…É•Ğ¹½¹Ñ•¹ÑÌ¥ô¸€‘íµ½Ù•µ•¹Ñ9½Ñ•õ€¤ì(€€€€€ÍÑ…ÉÑÑ¥Ù•5½Ù•µ•¹Ğ ¤ì(€€€ô•±Í”¥˜€¡…Ñ¥Ù•M•¹Í•%‘Ì¹¥¹±Õ‘•Ì¡µ½Ù•µ•¹Ñ%¤¤ì(€€€€€½¹ÍĞÉ…¹”€ô‘•ÍÉ¥‰”¡Ñ…É•Ğ¹½¹Ñ•¹ÑÌ¤¹Í¥¡ÑI…¹••±±Ìñğ€Ìì(€€€€€½¹ÍĞÍ•¹Í”€ô‘•ÍÉ¥‰”¡Ñ…É•Ğ¹½¹Ñ•¹ÑÌ¤ì(€€€€€½¹ÍĞÍ•¹Í•-¥¹€ôÍ•¹Í”¹Í•¹Í•-¥¹ñğ€¡µ½Ù•µ•¹Ñ%€ôôô€‰İ¡¥±”µ¡…¹ˆ€ü€‰Ñ½Õ ˆ€è€‰Í•”ˆ¤ì(€€€€€½¹ÍĞÁ½Í¥Ñ¥Ù•½¹‘¥Ñ¥½¸€ôÍ•¹Í•½¹‘¥Ñ¥½¹•ÍÉ¥ÁÑ¥½¸¡Í•¹Í”¤ì(€€€€€½¹ÍĞ½¹‘¥Ñ¥½¸€ôÍ•¹Í”¹¹•…Ñ•€ü¹¼€‘íÁ½Í¥Ñ¥Ù•½¹‘¥Ñ¥½¹õ€€èÁ½Í¥Ñ¥Ù•½¹‘¥Ñ¥½¸ì(€€€€€Í•ÑMÑ…ÑÕÌ¡€‘íÑ…É•Ñ1…‰•±ô€¬€‘í‘É½ÁÁ•‘1…‰•±ôƒŠH€‘í™…•1…‰•°¡Ñ…É•Ğ¹½¹Ñ•¹ÑÌ¥ô¸%ĞÍ•¹Í•Ìİ¡•¸€‘í½¹‘¥Ñ¥½¹ô…¹±½İÌİ¡¥±”Ñ¡”½¹‘¥Ñ¥½¸¥ÌÑÉÕ”¹€¤ì(€€€€€ÍÑ…ÉÑÑ¥Ù•5½Ù•µ•¹Ğ ¤ì(€€€ô•±Í”¥˜€¡l‰½±•´µÁ…¥Èˆ°€‰½µÁ½Õ¹µ½±•´‰t¹¥¹±Õ‘•Ì¡µ½Ù•µ•¹Ñ%¤€˜˜‘•ÍÉ¥‰”¡Ñ…É•Ğ¹½¹Ñ•¹ÑÌ¤¹‰•¡…Ù¥½É%µÁ±•µ•¹Ñ•¤ì(€€€€€½¹ÍĞµ•…¹¥¹œ€ô‘•ÍÉ¥‰”¡Ñ…É•Ğ¹½¹Ñ•¹ÑÌ¤ì(€€€€€½¹ÍĞÁ…Ñ¡İ…å½Õ¹Ğ€ôÁ…Ñ¡İ…åÍ½É5•…¹¥¹œ¡µ•…¹¥¹œ¤¹±•¹Ñ ì(€€€€€Í•ÑMÑ…ÑÕÌ¡€‘íÑ…É•Ñ1…‰•±ô€¬€‘í‘É½ÁÁ•‘1…‰•±ôƒŠH€‘í™…•1…‰•°¡Ñ…É•Ğ¹½¹Ñ•¹ÑÌ¥ô¸… ½˜¥ÑÌ€‘íÁ…Ñ¡İ…å½Õ¹Ñô½¹‘¥Ñ¥½¹…°Á…Ñ¡İ…åÌÉÕ¹Ìİ¡•¸¥ÑÌ½İ¸Í•¹Í”¥ÌÑÉÕ”¹€¤ì(€€€€€ÍÑ…ÉÑÑ¥Ù•5½Ù•µ•¹Ğ ¤ì(€€€ô•±Í”ì(€€€€€Í•ÑMÑ…ÑÕÌ¡€‘íÑ…É•Ñ1…‰•±ô€¬€‘í‘É½ÁÁ•‘1…‰•±ôƒŠH€‘í™…•1…‰•°¡Ñ…É•Ğ¹½¹Ñ•¹ÑÌ¥ô¸€‘í‘•ÍÉ¥‰”¡Ñ…É•Ğ¹½¹Ñ•¹ÑÌ¤¹•ÉÑ…¥¹Ñä€ôôô€‰ÁÉ½Ù¥Í¥½¹…°ˆ€ü€‰Q¡¥ÌÁÉ½Á½Í••áÁÉ•ÍÍ¥½¸¡…Ì¹¼…Ñ¥Ù”…µ”‰•¡…Ù¥½Èå•Ğ¸ˆ€è€‰Q¡”Ñİ¼±½‘Ì¡…Ù”µ•É•¥¹Ñ¼½¹”¸‰õ€¤ì(€€€ô(€€€É•ÑÕÉ¸ÑÉÕ”ì(€ô((€…¹Ù…Ì¹…‘‘Ù•¹Ñ1¥ÍÑ•¹•È ‰Á½¥¹Ñ•É‘½İ¸ˆ°•Ù•¹Ğ€ôøì(€€€½¹ÍĞÁ½¥¹Ğ€ô…¹Ù…ÍA½¥¹Ğ¡•Ù•¹Ğ¤ì(€€€½¹ÍĞ¡Õ€ô…µ•!Õ‘1…å½ÕĞ ¤ì(€€€¥˜€ …•Ù•¹Ğ¹¥ÍAÉ¥µ…Éäñğ€¡•Ù•¹Ğ¹Á½¥¹Ñ•ÉQåÁ”€ôôô€‰µ½ÕÍ”ˆ€˜˜•Ù•¹Ğ¹‰ÕÑÑ½¸€„ôô€À¤¤É•ÑÕÉ¸ì((€€€€¼¼!¥ĞµÑ•ÍĞÑ¡”±…ä™¥ÉÍĞ‰•…ÕÍ”¥Ğ¥ÌÁ…¥¹Ñ•…‰½Ù”Ñ¡”!U¸(€€€½¹ÍĞ‰±½¬€ô¡¥ÑQ•ÍĞ¡Á½¥¹Ğ¤ì(€€€¥˜€¡‰±½¬¤ì(€€€€€•Ù•¹Ğ¹ÁÉ•Ù•¹Ñ•™…Õ±Ğ ¤ì(€€€€€ÍÑ…Ñ”¹™½ÕÍ•‘%€ô‰±½¬¹¥ì(€€€€€ÍÑ…Ñ”¹‘É…œ€ôì(€€€€€€€‰±½¬°(€€€€€€€ÍÑ…ÉÑ`è‰±½¬¹à°(€€€€€€€ÍÑ…ÉÑdè‰±½¬¹ä°(€€€€€€€½™™Í•Ñ`èÁ½¥¹Ğ¹à€´‰±½¬¹à°(€€€€€€€½™™Í•ÑdèÁ½¥¹Ğ¹ä€´‰±½¬¹ä°(€€€€€€€Á½¥¹Ñ•É%è•Ù•¹Ğ¹Á½¥¹Ñ•É%°(€€€€€€€±…ÍÑ±¥•¹Ñ`è•Ù•¹Ğ¹±¥•¹Ñ`°(€€€€€€€±…ÍÑ±¥•¹Ñdè•Ù•¹Ğ¹±¥•¹Ñd°(€€€€€€€µ½Ù•è™…±Í”(€€€€€ôì(€€€€€…¹Ù…Ì¹Í•ÑA½¥¹Ñ•É…ÁÑÕÉ”¡•Ù•¹Ğ¹Á½¥¹Ñ•É%¤ì(€€€€€‘É…İ5…À ¤ì(€€€€€É•ÑÕÉ¸ì(€€€ô((€€€½¹ÍĞÑ½­•¸€ô¡Õ¹Ñ½­•¹Ì¹™¥¹¡…¹‘¥‘…Ñ”€ôøÁ½¥¹Ñ%¹Í¥‘•I•Ğ¡Á½¥¹Ğ¹à°Á½¥¹Ğ¹ä°…¹‘¥‘…Ñ”¤¤ì(€€€¥˜€¡Ñ½­•¸¤ì(€€€€€•Ù•¹Ğ¹ÁÉ•Ù•¹Ñ•™…Õ±Ğ ¤ì(€€€€€Á…±•ÑÑ•A½¥¹Ñ•ÉÉ…œ€ôì(€€€€€€€İ½ÉèÑ½­•¸¹İ½É°(€€€€€€€Á½¥¹Ñ•É%è•Ù•¹Ğ¹Á½¥¹Ñ•É%°(€€€€€€€ÍÑ…ÉÑ±¥•¹Ñ`è•Ù•¹Ğ¹±¥•¹Ñ`°(€€€€€€€ÍÑ…ÉÑ±¥•¹Ñdè•Ù•¹Ğ¹±¥•¹Ñd°(€€€€€€€½™™Í•Ñ`èÁ½¥¹Ğ¹à€´Ñ½­•¸¹±•™Ğ°(€€€€€€€½™™Í•ÑdèÁ½¥¹Ğ¹ä€´Ñ½­•¸¹Ñ½À°(€€€€€€€Á½¥¹Ğ°(€€€€€€€µ½Ù•è™…±Í”°(€€€€€€€‘É½ÁQ…É•Ğè¹Õ±°(€€€€€ôì(€€€€€…¹Ù…Ì¹Í•ÑA½¥¹Ñ•É…ÁÑÕÉ”¡•Ù•¹Ğ¹Á½¥¹Ñ•É%¤ì(€€€€€É•ÑÕÉ¸ì(€€€ô(€ô¤ì((€™Õ¹Ñ¥½¸µ½Ù•]½É±‘A½¥¹Ñ•ÉÉ…œ¡•Ù•¹Ğ¤ì(€€€¥˜€ …ÍÑ…Ñ”¹‘É…œñğÍÑ…Ñ”¹‘É…œ¹Á½¥¹Ñ•É%€„ôô•Ù•¹Ğ¹Á½¥¹Ñ•É%¤É•ÑÕÉ¸ì(€€€ÍÑ…Ñ”¹‘É…œ¹±…ÍÑ±¥•¹Ñ`€ô•Ù•¹Ğ¹±¥•¹Ñ`ì(€€€ÍÑ…Ñ”¹‘É…œ¹±…ÍÑ±¥•¹Ñd€ô•Ù•¹Ğ¹±¥•¹Ñdì(€€€½¹ÍĞÁ½¥¹Ğ€ô…¹Ù…ÍA½¥¹Ğ¡•Ù•¹Ğ¤ì(€€€½¹ÍĞ‘É…œ€ôÍÑ…Ñ”¹‘É…œì(€€€¥˜€ …‘É…œ¹µ½Ù•€˜˜5…Ñ ¹¡åÁ½Ğ¡Á½¥¹Ğ¹à€´€¡‘É…œ¹ÍÑ…ÉÑ`€¬‘É…œ¹½™™Í•Ñ`¤°Á½¥¹Ğ¹ä€´€¡‘É…œ¹ÍÑ…ÉÑd€¬‘É…œ¹½™™Í•Ñd¤¤€ğ€Ü¤É•ÑÕÉ¸ì(€€€‘É…œ¹µ½Ù•€ôÑÉÕ”ì(€€€½¹ÍĞ½Ù•ÉQ½ÁA…¹•°€ôÁ½¥¹Ñ%¹Í¥‘•I•Ğ¡Á½¥¹Ğ¹à°Á½¥¹Ğ¹ä°…µ•!Õ‘1…å½ÕĞ ¤¹‰½Õ¹‘Ì¤ì(€€€¥˜€¡‘É…œ¹½Ù•ÉQ½ÁA…¹•°€„ôô½Ù•ÉQ½ÁA…¹•°¤ì(€€€€€‘É…œ¹½Ù•ÉQ½ÁA…¹•°€ô½Ù•ÉQ½ÁA…¹•°ì(€€€€€Í•ÑMÑ…ÑÕÌ¡½Ù•ÉQ½ÁA…¹•°(€€€€€€€€ü€‰I•±•…Í”…¹åİ¡•É”¥¸Ñ¡”Ñ½ÀÁ…¹•°Ñ¼‘¥Í…ÉÑ¡¥Ì±…ä±½¸ˆ(€€€€€€€€è€‰É½À¥¸Ñ¡”…É‘•¸Ñ¼Á±…”Ñ¡¥Ì±½°½È½¹Ñ¼…¹½Ñ¡•È±½Ñ¼½µ‰¥¹”¸ˆ¤ì(€€€ô(€€€‘É…œ¹‰±½¬¹à€ô5…Ñ ¹µ…à À°5…Ñ ¹µ¥¸¡ÍÑ…Ñ”¹±…å½ÕĞ¹İ¥‘Ñ €´ÍÑ…Ñ”¹±…å½ÕĞ¹Í¥é”°Á½¥¹Ğ¹à€´‘É…œ¹½™™Í•Ñ`¤¤ì(€€€‘É…œ¹‰±½¬¹ä€ô5…Ñ ¹µ…à À°5…Ñ ¹µ¥¸¡ÍÑ…Ñ”¹±…å½ÕĞ¹¡•¥¡Ğ€´ÍÑ…Ñ”¹±…å½ÕĞ¹Í¥é”°Á½¥¹Ğ¹ä€´‘É…œ¹½™™Í•Ñd¤¤ì(€€€ÍÑ…Ñ”¹Ñ…É•Ñ%€ô¡¥ÑQ•ÍĞ¡Á½¥¹Ğ°‘É…œ¹‰±½¬¹¥¤ü¹¥ñğ¹Õ±°ì(€€€‘É…İ5…À ¤ì(€ô((€™Õ¹Ñ¥½¸™¥¹¥Í¡]½É±‘A½¥¹Ñ•ÉÉ…œ¡•Ù•¹Ğ¤ì(€€€¥˜€ …ÍÑ…Ñ”¹‘É…œñğÍÑ…Ñ”¹‘É…œ¹Á½¥¹Ñ•É%€„ôô•Ù•¹Ğ¹Á½¥¹Ñ•É%¤É•ÑÕÉ¸ì(€€€½¹ÍĞ‘É…œ€ôÍÑ…Ñ”¹‘É…œì(€€€‘É…œ¹±…ÍÑ±¥•¹Ñ`€ô•Ù•¹Ğ¹±¥•¹Ñ`ì(€€€‘É…œ¹±…ÍÑ±¥•¹Ñd€ô•Ù•¹Ğ¹±¥•¹Ñdì(€€€½¹ÍĞÁ½¥¹Ğ€ô…¹Ù…ÍA½¥¹Ğ¡•Ù•¹Ğ¤ì(€€€½¹ÍĞÑ…É•Ğ€ô¡¥ÑQ•ÍĞ¡Á½¥¹Ğ°‘É…œ¹‰±½¬¹¥¤ì(€€€½¹ÍĞ‘É½ÁÁ•‘%¹Q½ÁA…¹•°€ô‘É…œ¹µ½Ù•€˜˜Á½¥¹Ñ•É%Í=Ù•ÉQ½ÁA…¹•°¡•Ù•¹Ğ¹±¥•¹Ñ`°•Ù•¹Ğ¹±¥•¹Ñd¤ì(€€€ÍÑ…Ñ”¹‘É…œ€ô¹Õ±°ì(€€€ÍÑ…Ñ”¹Ñ…É•Ñ%€ô¹Õ±°ì(€€€¥˜€ …‘É…œ¹µ½Ù•¤ì(€€€€€Í•±•Ñ	±½¬¡‘É…œ¹‰±½¬¤ì(€€€€€É•ÍÕµ•Ñ¥Ù•5½Ù•µ•¹Ñ™Ñ•ÉÉ…œ¡‘É…œ¹‰±½¬¤ì(€€€€€É•ÑÕÉ¸ì(€€€ô(€€€¥˜€¡‘É½ÁÁ•‘%¹Q½ÁA…¹•°¤ì(€€€€€‘¥Í…É‘	±½¬¡‘É…œ¹‰±½¬¤ì(€€€€€É•ÑÕÉ¸ì(€€€ô(€€€¥˜€¡Ñ…É•Ğ€˜˜½µ‰¥¹”¡Ñ…É•Ğ°‘É…œ¹‰±½¬¤¤ì(€€€€€É•ÍÕµ•Ñ¥Ù•5½Ù•µ•¹Ñ™Ñ•ÉÉ…œ¡Ñ…É•Ğ¤ì(€€€€€É•ÑÕÉ¸ì(€€€ô(€€€¥˜€¡‘É½Á%¹±•…É¥¹œ¡‘É…œ¹‰±½¬°‘É…œ¹‰±½¬¹à°‘É…œ¹‰±½¬¹ä¤¤ì(€€€€€ÍÑ…Ñ”¹Í•±•Ñ•‘%€ô‘É…œ¹‰±½¬¹¥ì(€€€€€ÍÑ…Ñ”¹™½ÕÍ•‘%€ô‘É…œ¹‰±½¬¹¥ì(€€€€€É•¹‘•É•Ñ…¥° ¤ì(€€€€€‘É…İ5…À ¤ì(€€€€€Í•ÑMÑ…ÑÕÌ¡Ñ…É•Ğ(€€€€€€€€ü€‰Q¡½Í”±½‘Ì‘¼¹½Ğ½µ‰¥¹”ìÑ¡”‘É…•±…äİ…ÌÁ±…•¥¸Ñ¡”±•…É¥¹œ¸ˆ(€€€€€€€€è€‰±…äÁ±…•¥¸Ñ¡”±•…É¥¹œ¸ˆ¤ì(€€€€€É•ÍÕµ•Ñ¥Ù•5½Ù•µ•¹Ñ™Ñ•ÉÉ…œ¡‘É…œ¹‰±½¬¤ì(€€€€€É•ÑÕÉ¸ì(€€€ô(€€€‘É…œ¹‰±½¬¹à€ô‘É…œ¹ÍÑ…ÉÑ`ì(€€€‘É…œ¹‰±½¬¹ä€ô‘É…œ¹ÍÑ…ÉÑdì(€€€‘É…İ5…À ¤ì(€€€Í•ÑMÑ…ÑÕÌ ‰Q¡”±•…É¥¹œ¥Ì™Õ±°ìÑ¡•É”¥Ì¹¼½Á•¸ÍÁ…”™½ÈÑ¡…Ğ±…ä¸ˆ¤ì(€€€É•ÍÕµ•Ñ¥Ù•5½Ù•µ•¹Ñ™Ñ•ÉÉ…œ¡‘É…œ¹‰±½¬¤ì(€ô((€™Õ¹Ñ¥½¸…¹•±]½É±‘A½¥¹Ñ•ÉÉ…œ¡•Ù•¹Ğ¤ì(€€€¥˜€ …ÍÑ…Ñ”¹‘É…œ¤É•ÑÕÉ¸ì(€€€¥˜€¡•Ù•¹Ğ¹Á½¥¹Ñ•É%€„ôôÕ¹‘•™¥¹•€˜˜ÍÑ…Ñ”¹‘É…œ¹Á½¥¹Ñ•É%€„ôô•Ù•¹Ğ¹Á½¥¹Ñ•É%¤É•ÑÕÉ¸ì(€€€½¹ÍĞ‘É…œ€ôÍÑ…Ñ”¹‘É…œì(€€€½¹ÍĞ±¥•¹Ñ`€ô9Õµ‰•È¹¥Í¥¹¥Ñ”¡•Ù•¹Ğ¹±¥•¹Ñ`¤€ü•Ù•¹Ğ¹±¥•¹Ñ`€è‘É…œ¹±…ÍÑ±¥•¹Ñ`ì(€€€½¹ÍĞ±¥•¹Ñd€ô9Õµ‰•È¹¥Í¥¹¥Ñ”¡•Ù•¹Ğ¹±¥•¹Ñd¤€ü•Ù•¹Ğ¹±¥•¹Ñd€è‘É…œ¹±…ÍÑ±¥•¹Ñdì(€€€ÍÑ…Ñ”¹‘É…œ€ô¹Õ±°ì(€€€ÍÑ…Ñ”¹Ñ…É•Ñ%€ô¹Õ±°ì(€€€¥˜€¡‘É…œ¹µ½Ù•€˜˜Á½¥¹Ñ•É%Í=Ù•ÉQ½ÁA…¹•°¡±¥•¹Ñ`°±¥•¹Ñd¤¤ì(€€€€€‘¥Í…É‘	±½¬¡‘É…œ¹‰±½¬¤ì(€€€€€É•ÑÕÉ¸ì(€€€ô(€€€‘É…œ¹‰±½¬¹à€ô‘É…œ¹ÍÑ…ÉÑ`ì(€€€‘É…œ¹‰±½¬¹ä€ô‘É…œ¹ÍÑ…ÉÑdì(€€€‘É…İ5…À ¤ì(€€€É•ÍÕµ•Ñ¥Ù•5½Ù•µ•¹Ñ™Ñ•ÉÉ…œ¡ÍÑ…Ñ”¹‰±½­Ì¹™¥¹¡‰±½¬€ôø¡…ÍÑ¥Ù•AÉ½Ñ½ÑåÁ•	•¡…Ù¥½È¡‰±½¬¤¤¤ì(€ô((€İ¥¹‘½Ü¹…‘‘Ù•¹Ñ1¥ÍÑ•¹•È ‰Á½¥¹Ñ•Éµ½Ù”ˆ°µ½Ù•]½É±‘A½¥¹Ñ•ÉÉ…œ°ìÁ…ÍÍ¥Ù”è™…±Í”ô¤ì(€İ¥¹‘½Ü¹…‘‘Ù•¹Ñ1¥ÍÑ•¹•È ‰Á½¥¹Ñ•ÉÕÀˆ°™¥¹¥Í¡]½É±‘A½¥¹Ñ•ÉÉ…œ¤ì(€İ¥¹‘½Ü¹…‘‘Ù•¹Ñ1¥ÍÑ•¹•È ‰Á½¥¹Ñ•É…¹•°ˆ°…¹•±]½É±‘A½¥¹Ñ•ÉÉ…œ¤ì(€…¹Ù…Ì¹…‘‘Ù•¹Ñ1¥ÍÑ•¹•È ‰±½ÍÑÁ½¥¹Ñ•É…ÁÑÕÉ”ˆ°…¹•±]½É±‘A½¥¹Ñ•ÉÉ…œ¤ì((€…¹Ù…Ì¹…‘‘Ù•¹Ñ1¥ÍÑ•¹•È ‰­•å‘½İ¸ˆ°•Ù•¹Ğ€ôøì(€€€¥˜€ …ÍÑ…Ñ”¹‰±½­Ì¹±•¹Ñ ¤É•ÑÕÉ¸ì(€€€½¹ÍĞ¥¹‘•à€ô5…Ñ ¹µ…à À°ÍÑ…Ñ”¹‰±½­Ì¹™¥¹‘%¹‘•à¡‰±½¬€ôø‰±½¬¹¥€ôôôÍÑ…Ñ”¹™½ÕÍ•‘%¤¤ì(€€€¥˜€¡l‰ÉÉ½İI¥¡Ğˆ°€‰ÉÉ½İ½İ¸ˆ°€‰ÉÉ½İ1•™Ğˆ°€‰ÉÉ½İUÀ‰t¹¥¹±Õ‘•Ì¡•Ù•¹Ğ¹­•ä¤¤ì(€€€€€•Ù•¹Ğ¹ÁÉ•Ù•¹Ñ•™…Õ±Ğ ¤ì(€€€€€½¹ÍĞÍÑ•À€ô•Ù•¹Ğ¹­•ä€ôôô€‰ÉÉ½İI¥¡Ğˆñğ•Ù•¹Ğ¹­•ä€ôôô€‰ÉÉ½İ½İ¸ˆ€ü€Ä€è€´Äì(€€€€€½¹ÍĞ¹•áĞ€ôÍÑ…Ñ”¹‰±½­Íl¡¥¹‘•à€¬ÍÑ•À€¬ÍÑ…Ñ”¹‰±½­Ì¹±•¹Ñ ¤€”ÍÑ…Ñ”¹‰±½­Ì¹±•¹Ñ¡tì(€€€€€ÍÑ…Ñ”¹™½ÕÍ•‘%€ô¹•áĞ¹¥ì(€€€€€‘É…İ5…À ¤ì(€€€ô•±Í”¥˜€¡•Ù•¹Ğ¹­•ä€ôôô€‰¹Ñ•Èˆñğ•Ù•¹Ğ¹­•ä€ôôô€ˆ€ˆ¤ì(€€€€€•Ù•¹Ğ¹ÁÉ•Ù•¹Ñ•™…Õ±Ğ ¤ì(€€€€€½¹ÍĞ™½ÕÍ•€ôÍÑ…Ñ”¹‰±½­Ì¹™¥¹¡‰±½¬€ôø‰±½¬¹¥€ôôôÍÑ…Ñ”¹™½ÕÍ•‘%¤ñğÍÑ…Ñ”¹‰±½­ÍlÁtì(€€€€€Í•±•Ñ	±½¬¡™½ÕÍ•¤ì(€€€ô•±Í”¥˜€¡•Ù•¹Ğ¹­•ä€ôôô€‰Í…Á”ˆ¤ì(€€€€€ÍÑ…Ñ”¹Í•±•Ñ•‘%€ô¹Õ±°ì(€€€€€É•¹‘•É•Ñ…¥° ¤ì(€€€€€‘É…İ5…À ¤ì(€€€ô(€ô¤ì((€İ¥¹‘½Ü¹…‘‘Ù•¹Ñ1¥ÍÑ•¹•È ‰É•Í¥é”ˆ°É•Í¥é•5…À¤ì(€¥˜€¡‘½Õµ•¹Ğ¹™½¹ÑÌü¹É•…‘ä¤‘½Õµ•¹Ğ¹™½¹ÑÌ¹É•…‘ä¹Ñ¡•¸  ¤€ôø‘É…İ5…À ¤¤ì(€Í¡Õ™™±”¡ÍÑ…Ñ”¹‰±½­Ì¤ì(€É•¹‘•É±•µ•¹Ñ	…¹¬ ¤ì(€É•Í¥é•5…À ¤ì(€É•¹‘•É•Ñ…¥° ¤ì)ô¤ ¤ì
