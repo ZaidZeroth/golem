@@ -13,7 +13,11 @@
   const clayImage = new Image();
   clayImage.src = "assets/golem-clay-lump-64px.png";
   clayImage.addEventListener("load", () => drawMap());
+  const miniGolemImage = new Image();
+  miniGolemImage.src = "assets/golem-mini-golem-front-64px.png";
+  miniGolemImage.addEventListener("load", () => drawMap());
   const clayTintCache = new Map();
+  const miniGolemTintCache = new Map();
   const clearingPolygon = [
     [0.24, 0.31], [0.31, 0.26], [0.39, 0.24], [0.44, 0.27],
     [0.45, 0.32], [0.42, 0.36], [0.47, 0.39], [0.54, 0.36],
@@ -229,7 +233,7 @@
         (right.category === "sense" && left.category === "motive")) {
       const sense = left.category === "sense" ? left : right;
       const motive = left.category === "motive" ? left : right;
-      return provisionalMeaning("golem-pair", "golem", "GOLEM", `a golem with ${sense.reading}, set to ${motive.reading}; activation is not defined`, { sense, motive });
+      return provisionalMeaning("golem-pair", "golem", "GOLEM", `a golem with ${sense.reading}, set to ${motive.reading}; activation is not defined`, { sense, motive, colorIntentMask: motive.colorIntentMask || 0 });
     }
     if ((left.category === "sense" && ["and", "or"].includes(right.id)) ||
         (right.category === "sense" && ["and", "or"].includes(left.id))) {
@@ -497,6 +501,32 @@
     return sprite;
   }
 
+  function tintedMiniGolem(colorMask) {
+    if (miniGolemTintCache.has(colorMask)) return miniGolemTintCache.get(colorMask);
+    const tint = {
+      1: "rgb(190 55 48 / 55%)",
+      2: "rgb(68 143 73 / 55%)",
+      3: "rgb(222 192 55 / 58%)",
+      4: "rgb(65 112 193 / 55%)",
+      5: "rgb(196 67 157 / 58%)",
+      6: "rgb(61 183 184 / 58%)",
+      7: "rgb(238 239 228 / 72%)"
+    }[colorMask];
+    if (!tint) return miniGolemImage;
+    const sprite = document.createElement("canvas");
+    sprite.width = miniGolemImage.naturalWidth || 64;
+    sprite.height = miniGolemImage.naturalHeight || 64;
+    const spriteContext = sprite.getContext("2d");
+    if (miniGolemImage.complete && miniGolemImage.naturalWidth) {
+      spriteContext.drawImage(miniGolemImage, 0, 0, sprite.width, sprite.height);
+      spriteContext.globalCompositeOperation = "source-atop";
+      spriteContext.fillStyle = tint;
+      spriteContext.fillRect(0, 0, sprite.width, sprite.height);
+    }
+    miniGolemTintCache.set(colorMask, sprite);
+    return sprite;
+  }
+
   function drawMap() {
     const { width, height, size } = state.layout;
     context.clearRect(0, 0, width, height);
@@ -511,14 +541,18 @@
       const selected = block.id === state.selectedId;
       const focused = block.id === state.focusedId;
       const target = block.id === state.targetId;
-      if (clayImage.complete && clayImage.naturalWidth) {
-        const colorMask = describe(block.contents).colorMask;
-        context.drawImage(tintedClay(colorMask), block.x, block.y, size, size);
+      const meaning = describe(block.contents);
+      const isCreature = ["sense", "motive", "golem"].includes(meaning.category);
+      const colorMask = meaning.colorIntentMask ?? meaning.colorMask ?? 0;
+      if (isCreature && miniGolemImage.complete && miniGolemImage.naturalWidth) {
+        context.drawImage(tintedMiniGolem(colorMask), block.x, block.y, size, size);
+      } else if (clayImage.complete && clayImage.naturalWidth) {
+        context.drawImage(tintedClay(meaning.colorMask), block.x, block.y, size, size);
       } else {
         context.fillStyle = "#aaa7a0";
         context.fillRect(block.x, block.y, size, size);
       }
-      if (describe(block.contents).id === "do-move-left") {
+      if (meaning.id === "do-move-left") {
         context.strokeStyle = "#d4e2a4";
         context.lineWidth = 2;
         context.setLineDash([4, 3]);
@@ -535,12 +569,13 @@
       context.lineWidth = 2.4;
       context.textAlign = "center";
       context.textBaseline = "middle";
-      context.font = `400 ${faceFontSize(faceLabel(block.contents), size)}px "Creepster", Georgia, serif`;
+      context.font = `800 ${faceFontSize(faceLabel(block.contents), size)}px "Atkinson Hyperlegible Next", system-ui, sans-serif`;
       context.shadowColor = "rgb(255 247 224 / 90%)";
       context.shadowBlur = 2;
       const label = faceLabel(block.contents);
-      context.strokeText(label, block.x + size / 2, block.y + size / 2, size - 8);
-      context.fillText(label, block.x + size / 2, block.y + size / 2, size - 8);
+      const labelY = block.y + size * (isCreature ? 0.42 : 0.5);
+      context.strokeText(label, block.x + size / 2, labelY, size - 8);
+      context.fillText(label, block.x + size / 2, labelY, size - 8);
       context.shadowBlur = 0;
     }
   }
