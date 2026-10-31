@@ -27,11 +27,15 @@ body {
 button { font: inherit; }
 .page-shell { width: min(100% - 36px, 1020px); margin: 0 auto; padding: 28px 0 42px; }
 .page-header { display: flex; align-items: center; justify-content: space-between; gap: 24px; margin-bottom: 16px; }
+.header-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 8px; }
 h1, h2, p { margin-top: 0; }
 h1 { margin: 0; font-family: "Creepster", Georgia, serif; font-size: clamp(2.1rem, 6vw, 3.3rem); font-weight: 400; letter-spacing: .04em; line-height: 1; }
 h2 { margin: 0; font-family: "Creepster", Georgia, serif; font-size: clamp(1.2rem, 3vw, 1.5rem); font-weight: 400; }
 .reset-button { flex: 0 0 auto; min-height: 46px; padding: 0 18px; border: 1px solid #78836f; border-radius: 999px; color: var(--ink); background: #313a33; font-weight: 750; cursor: pointer; }
 .reset-button:hover { background: #3c4b3e; }
+.trash-button { min-height: 46px; padding: 0 15px; border: 1px dashed #aa7b70; border-radius: 12px; color: #ffe5da; background: #3c2d30; font-family: "Creepster", Georgia, serif; font-size: 1.05rem; cursor: pointer; transition: background-color .15s, border-color .15s, transform .15s; }
+.trash-button:hover, .trash-button:focus-visible { border-color: #edb29c; background: #58363a; }
+.trash-button.drop-ready { border-color: #ffd18f; background: #86533b; transform: scale(1.06); box-shadow: 0 0 18px rgb(255 192 121 / 42%); }
 .workbench { overflow: hidden; border: 1px solid var(--line); border-radius: 22px; background: var(--panel); box-shadow: var(--shadow); }
 .element-bank { padding: 14px 16px 16px; border-bottom: 1px solid #353947; background: linear-gradient(135deg, #27312a, #252631); }
 .element-bank h2 { margin-bottom: 3px; }
@@ -56,6 +60,8 @@ h2 { margin: 0; font-family: "Creepster", Georgia, serif; font-size: clamp(1.2re
 @media (max-width: 640px) {
   .page-shell { width: min(100% - 22px, 1020px); padding-top: 18px; }
   .page-header { margin-bottom: 12px; }
+  .header-actions { gap: 6px; }
+  .trash-button, .reset-button { min-height: 40px; padding-inline: 11px; }
   .map-board { padding: 8px; }
   .element-bank { padding: 12px 10px; }
   .element-token { min-height: 32px; padding-inline: 8px; }
