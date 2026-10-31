@@ -85,6 +85,7 @@
     "while-touch-blue-clod", "while-touch-yellow-clod", "while-touch-magenta-clod",
     "while-touch-cyan-clod", "while-touch-white-clod"
   ];
+  activeSenseIds.push(...activeSenseIds.filter(id => !id.startsWith("not-")).map(id => `not-${id}`));
   function element(word) {
     return { type: "element", word };
   }
@@ -98,9 +99,9 @@
   }
 
   function makeInitialBlocks() {
-    // The element bank is an endless source, so start with one world copy of
-    // each base word instead of pre-filling the clearing with duplicates.
-    return elementWords.map((word, index) => makeBlock(`block-${index}`, element(word)));
+    // Start with a clear garden. Players drag copies from the endless element
+    // bank above into the world as they need them.
+    return [];
   }
 
   const elementMeanings = {
@@ -287,6 +288,21 @@
       return provisionalMeaning("not-hold", "sense", "NOT HOLD", "while neither hand is holding a clay clod", {
         senseKind: "hold", negated: true,
         senseText: "not holding anything"
+      });
+    }
+    const negatedSense = left.id === "not" ? right : right.id === "not" ? left : null;
+    if (negatedSense?.category === "sense" && activeSenseIds.includes(negatedSense.id)) {
+      const reading = negatedSenseReading(negatedSense);
+      return provisionalMeaning(`not-${negatedSense.id}`, "sense", `NOT ${negatedSense.label}`, reading, {
+        senseKind: negatedSense.senseKind || "see",
+        senseText: reading,
+        negated: !Boolean(negatedSense.negated),
+        ...(negatedSense.direction ? { direction: negatedSense.direction } : {}),
+        ...(negatedSense.sightRangeCells ? { sightRangeCells: negatedSense.sightRangeCells } : {}),
+        ...(Number.isInteger(negatedSense.sightColorMask) ? { sightColorMask: negatedSense.sightColorMask } : {}),
+        ...(Number.isInteger(negatedSense.touchColorMask) ? { touchColorMask: negatedSense.touchColorMask } : {}),
+        ...(negatedSense.touchObjectKind ? { touchObjectKind: negatedSense.touchObjectKind } : {}),
+        ...(negatedSense.handSide ? { handSide: negatedSense.handSide } : {})
       });
     }
     if ((left.id === "left" || left.id === "right") && right.id === "hand" ||
@@ -1123,10 +1139,9 @@
     const sensor = sensorFor(selected);
     const pathways = pathwaysForMeaning(meaning);
     const sightRangeCells = meaning.sightRangeCells || 3;
-    const senseKind = sensor?.senseKind || (sensor?.id === "while-hand" ? "touch" : "see");
     const positiveSenseDescription = sensor ? senseConditionDescription(sensor) : `clay within ${sightRangeCells} cells`;
     const senseDescription = sensor?.negated
-      ? `no ${senseKind === "touch" ? "other clay clod is adjacent" : `clay is within ${sightRangeCells} cells`}`
+      ? negatedSenseConditionDescription(sensor)
       : positiveSenseDescription;
     const sightStatus = sensor
       ? selected.senseActive
@@ -1479,6 +1494,43 @@
       : `clay within ${range} cells`;
   }
 
+  function negatedSenseReading(sense) {
+    return `while not ${sense.reading.replace(/^while\s+/i, "").replace(/\bsomething\b/i, "anything")}`;
+  }
+
+  function negatedSenseConditionDescription(sense) {
+    const senseKind = sense.senseKind || (sense.id === "while-hand" ? "touch" : "see");
+    if (senseKind === "see" && sense.direction) {
+      const range = sense.sightRangeCells || 3;
+      const directionWords = { left: "to the left", right: "to the right", up: "above", down: "below" };
+      return `nothing is directly ${directionWords[sense.direction]} within ${range} cells`;
+    }
+    if (senseKind === "see") {
+      const range = sense.sightRangeCells || 3;
+      const colorNames = { 1: "red", 2: "green", 3: "yellow", 4: "blue", 5: "magenta", 6: "cyan", 7: "white" };
+      const color = colorNames[sense.sightColorMask];
+      return color
+        ? `no ${color}-pigmented clay is within ${range} cells`
+        : `no clay is within ${range} cells`;
+    }
+    if (senseKind === "hold") {
+      return sense.handSide
+        ? `the ${sense.handSide} hand is holding nothing`
+        : "neither hand is holding a clay clod";
+    }
+    if (senseKind === "touch") {
+      return "no other clay clod is adjacent";
+    }
+    return `not ${senseConditionDescription(sense)}`;
+  }
+
+  function senseConditionStateDescription(sense, isTrue) {
+    if (sense.negated) {
+      return isTrue ? negatedSenseConditionDescription(sense) : senseConditionDescription(sense);
+    }
+    return isTrue ? senseConditionDescription(sense) : negatedSenseConditionDescription(sense);
+  }
+
   function sensorIsTrue(block, sense) {
     const centerX = block.x + state.layout.size / 2;
     const centerY = block.y + state.layout.size / 2;
@@ -1594,10 +1646,7 @@
           activePathways.push({ block, pathway, index, key, active: isTrue });
           if (wasInitialized && wasActive !== isTrue) sightChanged = true;
           if (wasInitialized && wasActive !== isTrue) {
-            const condition = senseConditionDescription(pathway.sense);
-            const truth = isTrue
-              ? (pathway.sense.negated ? `no ${condition}` : condition)
-              : (pathway.sense.negated ? condition : `no ${condition}`);
+            const truth = senseConditionStateDescription(pathway.sense, isTrue);
             setStatus(`${pathway.sense.label.toLowerCase()} then ${pathway.motive.label.toLowerCase()} is ${isTrue ? "true" : "false"}: ${truth}.`);
           }
         });
@@ -1617,8 +1666,7 @@
           sightChanged = true;
           if (state.selectedId === block.id) renderDetail();
           if (wasInitialized) {
-            const condition = senseConditionDescription(sense);
-            setStatus(`while ${sense.label.toLowerCase()} is ${isTrue ? "true" : "false"}: ${condition}.`);
+            setStatus(`${sense.label.toLowerCase()} is ${isTrue ? "true" : "false"}: ${senseConditionStateDescription(sense, isTrue)}.`);
           }
         }
       }
@@ -1875,8 +1923,9 @@
       const range = describe(target.contents).sightRangeCells || 3;
       const sense = describe(target.contents);
       const senseKind = sense.senseKind || (movementId === "while-hand" ? "touch" : "see");
-      const positiveCondition = senseConditionDescription(sense);
-      const condition = sense.negated ? `no ${positiveCondition}` : positiveCondition;
+      const condition = sense.negated
+        ? negatedSenseConditionDescription(sense)
+        : senseConditionDescription(sense);
       setStatus(`${targetLabel} + ${droppedLabel} → ${faceLabel(target.contents)}. It senses when ${condition} and glows while the condition is true.`);
       startActiveMovement();
     } else if (["golem-pair", "compound-golem"].includes(movementId) && describe(target.contents).behaviorImplemented) {
