@@ -19,6 +19,10 @@
       </header>
 
       <section class="workbench" aria-label="Golem world and selected block">
+        <section class="element-bank" aria-labelledby="element-bank-title">
+          <h2 id="element-bank-title">Elements</h2>
+          <div id="element-bank" class="element-bank-grid" aria-label="Base word elements"></div>
+        </section>
         <div class="map-board">
           <canvas id="map-canvas" aria-label="Game world showing draggable word blocks" tabindex="0">
             This prototype needs a browser with canvas support.
@@ -27,18 +31,13 @@
 
         <aside class="detail-panel" aria-label="Selected block information">
           <div id="detail-content" class="detail-content" aria-live="polite">
-            <p class="detail-placeholder">Select a square to see its exact construction and natural-language reading.</p>
+            <p class="detail-placeholder">No block selected.</p>
           </div>
         </aside>
       </section>
 
-      <p id="status" class="status" role="status" aria-live="polite">Choose a block to inspect it, or combine two blocks to build an expression.</p>
+      <p id="status" class="status" role="status" aria-live="polite">Choose a block or combine two blocks.</p>
 
-      <section class="recipe-panel" aria-labelledby="recipe-title">
-        <h2 id="recipe-title">Buildable expression recipes</h2>
-        <ul id="recipe-list" class="recipe-list"></ul>
-        <p class="recipe-note">The listed pairs match the combination logic. The owner-requested move-left example is active in this prototype only; its movement rule remains open in the language summary.</p>
-      </section>
     </main>
   </body>
 </html>
