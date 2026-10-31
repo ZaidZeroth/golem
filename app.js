@@ -1004,7 +1004,7 @@
     const hud = gameHudLayout();
     const { width } = state.layout;
     context.save();
-    context.fillStyle = "rgb(25 30 29 / 72%)";
+    context.fillStyle = "rgb(25 30 29 / 48%)";
     context.fillRect(0, 0, width, hud.bounds.bottom);
     context.strokeStyle = state.drag?.overTopPanel
       ? "rgb(246 187 123 / 88%)"
