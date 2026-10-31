@@ -4,7 +4,7 @@ A framework-free browser prototype for exploring Golem's square-block world and 
 
 ## Run locally
 
-Open `index.html` in a current browser. There is no build step, package install, or external dependency. For a local browser session, serve this directory on loopback:
+Because the game loads its JavaScript modules, run it through a local HTTP server rather than opening `index.html` with `file://`. No build step, package install, or external dependency is required; serve this directory on loopback:
 
 ```sh
 python3 -m http.server 8765 --bind 127.0.0.1
