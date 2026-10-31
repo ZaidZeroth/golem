@@ -15,7 +15,12 @@
     <main class="page-shell">
       <header class="page-header">
         <h1>GOLEM</h1>
-        <button class="reset-button" id="reset-button" type="button">Reset</button>
+        <div class="header-actions">
+          <button class="trash-button" id="trash-button" type="button" aria-label="Discard the selected clay, or drag clay here to remove it">
+            <span aria-hidden="true">▣</span> Trash
+          </button>
+          <button class="reset-button" id="reset-button" type="button">Reset</button>
+        </div>
       </header>
 
       <section class="workbench" aria-label="Golem world and selected block">
