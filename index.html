@@ -14,49 +14,41 @@
         <div>
           <p class="eyebrow">A GOLEM PROTOTYPE · NIGHT SHIFT 01</p>
           <h1>The Word Workshop</h1>
-          <p class="lede">Join two pieces of living clay. Keep the new compound ready for another experiment.</p>
+          <p class="lede">Explore a moonlit map of word blocks. Join two squares to make one new square.</p>
         </div>
-        <button class="reset-button" id="reset-button" type="button">Reset the table</button>
+        <button class="reset-button" id="reset-button" type="button">Reshuffle the map</button>
       </header>
 
       <section class="workbench" aria-labelledby="workbench-title">
         <div class="section-heading">
           <div>
-            <p class="eyebrow">THE MOONLIT TABLE</p>
+            <p class="eyebrow">THE MOONLIT MAP</p>
             <h2 id="workbench-title">Word blocks</h2>
           </div>
-          <p class="section-hint">Drag one square onto another, or select two with a click or tap.</p>
+          <p class="section-hint">Drag a square onto another to merge them. Only NOT + RED is enabled; other pairs stay unchanged.</p>
         </div>
 
         <div class="map-board">
-          <p class="board-label">Elements</p>
-          <div class="block-tray" id="source-tray" aria-label="Starting element blocks"></div>
-          <div class="tray-divider" aria-hidden="true"><span>new compounds</span></div>
-          <div class="block-tray result-tray" id="result-tray" aria-label="Reusable compound blocks">
-            <p class="empty-state" id="empty-state">Your first compound will settle here.</p>
-          </div>
+          <canvas id="map-canvas" aria-label="Top-down map of draggable word blocks" tabindex="0">
+            This prototype needs a browser with canvas support.
+          </canvas>
         </div>
 
-        <aside class="detail-panel" aria-labelledby="detail-title">
-          <div class="detail-mark" aria-hidden="true">✦</div>
-          <div>
-            <p class="eyebrow">INSPECTED PIECE</p>
-            <h3 id="detail-title">Inside the square</h3>
-            <div id="detail-content" aria-live="polite">
-              <p class="detail-placeholder">Choose a square to inspect its contents and construction.</p>
-            </div>
+        <aside class="detail-panel" aria-label="Selected block details">
+          <div id="detail-content" class="detail-content" aria-live="polite">
+            <p class="detail-placeholder">Select a square to see its exact construction and provisional reading.</p>
           </div>
         </aside>
       </section>
 
       <section class="feedback-panel" aria-label="Combination feedback">
         <p class="feedback-label">FIELD NOTES</p>
-        <p id="status" class="status" role="status" aria-live="polite">Try combining NOT + RED.</p>
-        <p class="rule-note"><strong>Confirmed in this slice:</strong> NOT + RED → NOT RED. The square is an entity carrying an expression; matching expressions against entities is not implemented.</p>
+        <p id="status" class="status" role="status" aria-live="polite">Try combining NOT with RED.</p>
+        <p class="rule-note"><strong>Confirmed in this slice:</strong> NOT + RED → NOT RED. Its construction keeps interaction order, while the square face uses a readable label. Pattern matching and WHILE/DO activation are not implemented.</p>
       </section>
 
       <footer class="page-footer">
-        <p><strong>Prototype boundary:</strong> no sensing or action behavior is implied. How a completed WHILE/DO rule becomes active, and how a pattern applies to a block entity, remain open design questions.</p>
+        <p><strong>Prototype boundary:</strong> combining two squares consumes the dropped square and keeps the target square in place. Other combinations and any active mini-golem behavior remain outside this slice.</p>
       </footer>
     </main>
   </body>
