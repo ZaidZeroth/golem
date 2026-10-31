@@ -15,17 +15,16 @@
     <main class="page-shell">
       <header class="page-header">
         <h1>GOLEM</h1>
-        <div class="header-actions">
-          <button class="trash-button" id="trash-button" type="button" aria-label="Discard the selected clay, or drag clay here to remove it">
-            <span aria-hidden="true">▣</span> Trash
-          </button>
-          <button class="reset-button" id="reset-button" type="button">Reset</button>
-        </div>
       </header>
 
       <section class="workbench" aria-label="Golem world and selected block">
-        <section class="element-bank" aria-labelledby="element-bank-title">
-          <h2 id="element-bank-title">Elements</h2>
+        <section class="element-bank" aria-label="Element bank and world controls">
+          <div class="element-bank-controls">
+            <button class="trash-button" id="trash-button" type="button" aria-label="Discard the selected clay, or drag clay here to remove it">
+              <span aria-hidden="true">▣</span> Trash
+            </button>
+            <button class="reset-button" id="reset-button" type="button">Reset</button>
+          </div>
           <div id="element-bank" class="element-bank-grid" aria-label="Base word elements"></div>
         </section>
         <div class="map-board">
@@ -41,7 +40,7 @@
         </aside>
       </section>
 
-      <p id="status" class="status" role="status" aria-live="polite">Choose a block or combine two blocks.</p>
+      <p id="status" class="status" role="status" aria-live="polite">Select a square, then drag it onto another to combine.</p>
 
     </main>
   </body>
