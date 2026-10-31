@@ -25,7 +25,7 @@
             <p class="eyebrow">THE MOONLIT MAP</p>
             <h2 id="workbench-title">Word blocks</h2>
           </div>
-          <p class="section-hint">Drag a square onto another to merge them. Only NOT + RED is enabled; other pairs stay unchanged.</p>
+          <p class="section-hint">Drag a square onto another to build a word expression. The face shows a short name; select it to inspect its construction and natural-language reading.</p>
         </div>
 
         <div class="map-board">
@@ -36,19 +36,19 @@
 
         <aside class="detail-panel" aria-label="Selected block details">
           <div id="detail-content" class="detail-content" aria-live="polite">
-            <p class="detail-placeholder">Select a square to see its exact construction and provisional reading.</p>
+            <p class="detail-placeholder">Select a square to see its exact construction and natural-language reading.</p>
           </div>
         </aside>
       </section>
 
       <section class="feedback-panel" aria-label="Combination feedback">
         <p class="feedback-label">FIELD NOTES</p>
-        <p id="status" class="status" role="status" aria-live="polite">Try combining NOT with RED.</p>
-        <p class="rule-note"><strong>Confirmed in this slice:</strong> NOT + RED → NOT RED. Its construction keeps interaction order, while the square face uses a readable label. Pattern matching and WHILE/DO activation are not implemented.</p>
+        <p id="status" class="status" role="status" aria-live="polite">Try NOT + RED, NOT + HAND, HAND + HAND, or build a sense/action expression.</p>
+        <p class="rule-note"><strong>Suggested constructions in this draft:</strong> NOT RED, FIST, COMBINE, NOT FIST, LEFT, double-NOT RIGHT, directed hands, sight filters, WHILE senses, DO actions, AND/OR sense pairs, IN ME queries, and sense/action GOLEM pairs. These are provisional readings only: patterns do not match blocks and WHILE/DO do not activate game behavior.</p>
       </section>
 
       <footer class="page-footer">
-        <p><strong>Prototype boundary:</strong> combining two squares consumes the dropped square and keeps the target square in place. Other combinations and any active mini-golem behavior remain outside this slice.</p>
+        <p><strong>Prototype boundary:</strong> combining two squares consumes the dropped square and keeps the target square in place. The exact target-then-dropped tree is retained even when its face label is normalized. No creature simulation, movement, pattern matching, eye closing, or SPLIT/undo history is implemented.</p>
       </footer>
     </main>
   </body>

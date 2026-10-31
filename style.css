@@ -48,6 +48,7 @@ h2 { margin: 0; font-family: Georgia, "Times New Roman", serif; font-size: clamp
 .detail-list dt { margin-bottom: 6px; color: #c2b0d3; font-size: .7rem; font-weight: 750; letter-spacing: .1em; text-transform: uppercase; }
 .detail-list dd { margin: 0; color: #f4e9d5; font-size: .95rem; line-height: 1.5; overflow-wrap: anywhere; }
 .detail-reading { color: #e0d4c0 !important; }
+.reading-status { display: block; margin-top: 6px; color: #b7a0ce; font-size: .72rem; line-height: 1.4; }
 .feedback-panel { margin-top: 18px; padding: 17px 20px; border-left: 4px solid var(--ember); border-radius: 5px 14px 14px 5px; background: #29262a; }
 .feedback-label { margin-bottom: 6px; color: var(--ember); }
 .status { margin-bottom: 8px; font-size: 1rem; font-weight: 750; line-height: 1.45; }
