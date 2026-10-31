@@ -14,7 +14,10 @@
   worldImage.addEventListener("load", () => drawMap());
   const clayImage = new Image();
   clayImage.src = "assets/golem-clay-lump-64px.png";
-  clayImage.addEventListener("load", () => drawMap());
+  clayImage.addEventListener("load", () => {
+    drawMap();
+    renderElementBank();
+  });
   const miniGolemImage = new Image();
   miniGolemImage.src = "assets/golem-mini-golem-front-64px.png";
   miniGolemImage.addEventListener("load", () => drawMap());
@@ -354,11 +357,14 @@
     const rows = Math.max(1, Math.floor(height / cell));
     const dpr = window.devicePixelRatio || 1;
     state.layout = { size, cell, columns, rows, width, height, dpr };
+    elementBank.style.setProperty("--world-cell-size", `${cell}px`);
+    elementBank.style.setProperty("--world-clay-size", `${size}px`);
     canvas.style.height = `${height}px`;
     canvas.width = Math.round(width * dpr);
     canvas.height = Math.round(height * dpr);
     context.setTransform(dpr, 0, 0, dpr, 0, 0);
     arrangeBlocks();
+    renderElementBank();
     drawMap();
   }
 
@@ -755,26 +761,28 @@
   }
 
   function renderElementBank() {
+    elementBank.replaceChildren();
     for (const word of elementWords) {
       const button = document.createElement("button");
       button.type = "button";
       button.className = "element-token";
-      const meaning = describe(element(word));
+      const contents = element(word);
+      const meaning = describe(contents);
       const spritePath = elementSpritePaths[meaning.id];
-      if (spritePath) {
-        const sprite = document.createElement("img");
-        sprite.src = spritePath;
-        sprite.alt = "";
-        sprite.className = "element-token-sprite";
-        sprite.draggable = false;
-        button.append(sprite);
-      }
+      const sprite = document.createElement("img");
+      sprite.className = "element-token-art";
+      sprite.alt = "";
+      sprite.draggable = false;
+      sprite.src = spritePath || tintedClay(meaning.colorMask).toDataURL();
+      button.append(sprite);
       const label = document.createElement("span");
-      label.textContent = faceLabel(element(word));
+      label.className = "element-token-label";
+      label.textContent = faceLabel(contents);
+      label.style.fontSize = `${faceFontSize(label.textContent, state.layout.size)}px`;
       button.append(label);
       button.dataset.elementWord = word;
       button.draggable = true;
-      button.setAttribute("aria-label", `Add a copy of ${faceLabel(element(word))} to the game world`);
+      button.setAttribute("aria-label", `Add a copy of ${faceLabel(contents)} to the game world`);
       button.addEventListener("dragstart", event => {
         event.dataTransfer.setData("text/plain", word);
         event.dataTransfer.effectAllowed = "copy";
@@ -902,24 +910,19 @@
     lastMovementTime = null;
   }
 
-  function selectOrCombine(block) {
-    if (!state.selectedId) {
-      state.selectedId = block.id;
-      state.focusedId = block.id;
-      renderDetail();
-      drawMap();
-      setStatus(`${faceLabel(block.contents)} selected. Choose a second square in order, or select it again to clear.`);
-      return;
-    }
-    const first = allBlocks().find(candidate => candidate.id === state.selectedId);
-    if (first && first.id === block.id) {
+  function selectBlock(block) {
+    if (state.selectedId === block.id) {
       state.selectedId = null;
       renderDetail();
       drawMap();
       setStatus("Selection cleared.");
       return;
     }
-    if (first) combine(first, block);
+    state.selectedId = block.id;
+    state.focusedId = block.id;
+    renderDetail();
+    drawMap();
+    setStatus(`${faceLabel(block.contents)} selected. Drag it onto another square to combine.`);
   }
 
   function combine(target, dropped) {
@@ -1000,7 +1003,7 @@
     state.targetId = null;
     trashButton.classList.remove("drop-ready");
     if (!drag.moved) {
-      selectOrCombine(drag.block);
+      selectBlock(drag.block);
       return;
     }
     if (droppedInTrash) {
@@ -1050,7 +1053,7 @@
     } else if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
       const focused = state.blocks.find(block => block.id === state.focusedId) || state.blocks[0];
-      selectOrCombine(focused);
+      selectBlock(focused);
     } else if (event.key === "Escape") {
       state.selectedId = null;
       renderDetail();
