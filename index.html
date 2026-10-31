@@ -4,52 +4,41 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="theme-color" content="#151820">
-    <title>Golem — The Word Workshop</title>
+    <title>GOLEM</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible+Next:wght@700;800&family=Creepster&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="style.css">
     <script src="app.js" defer></script>
   </head>
   <body>
     <main class="page-shell">
       <header class="page-header">
-        <div>
-          <p class="eyebrow">A GOLEM PROTOTYPE · NIGHT SHIFT 01</p>
-          <h1>The Word Workshop</h1>
-          <p class="lede">Explore a moonlit map of word blocks. Join two squares to make one new square.</p>
-        </div>
-        <button class="reset-button" id="reset-button" type="button">Reshuffle the map</button>
+        <h1>GOLEM</h1>
+        <button class="reset-button" id="reset-button" type="button">Reset</button>
       </header>
 
-      <section class="workbench" aria-labelledby="workbench-title">
-        <div class="section-heading">
-          <div>
-            <p class="eyebrow">THE MOONLIT MAP</p>
-            <h2 id="workbench-title">Word blocks</h2>
-          </div>
-          <p class="section-hint">Drag a square onto another to build a word expression. The face shows a short name; select it to inspect its construction and natural-language reading.</p>
-        </div>
-
+      <section class="workbench" aria-label="Golem world and selected block">
         <div class="map-board">
-          <canvas id="map-canvas" aria-label="Top-down map of draggable word blocks" tabindex="0">
+          <canvas id="map-canvas" aria-label="Game world showing draggable word blocks" tabindex="0">
             This prototype needs a browser with canvas support.
           </canvas>
         </div>
 
-        <aside class="detail-panel" aria-label="Selected block details">
+        <aside class="detail-panel" aria-label="Selected block information">
           <div id="detail-content" class="detail-content" aria-live="polite">
             <p class="detail-placeholder">Select a square to see its exact construction and natural-language reading.</p>
           </div>
         </aside>
       </section>
 
-      <section class="feedback-panel" aria-label="Combination feedback">
-        <p class="feedback-label">FIELD NOTES</p>
-        <p id="status" class="status" role="status" aria-live="polite">Try NOT + RED, NOT + HAND, HAND + HAND, or build a sense/action expression.</p>
-        <p class="rule-note"><strong>Suggested constructions in this draft:</strong> NOT RED, FIST, COMBINE, NOT FIST, LEFT, double-NOT RIGHT, directed hands, sight filters, WHILE senses, DO actions, AND/OR sense pairs, IN ME queries, and sense/action GOLEM pairs. These are provisional readings only: patterns do not match blocks and WHILE/DO do not activate game behavior.</p>
-      </section>
+      <p id="status" class="status" role="status" aria-live="polite">Choose a block to inspect it, or combine two blocks to build an expression.</p>
 
-      <footer class="page-footer">
-        <p><strong>Prototype boundary:</strong> combining two squares consumes the dropped square and keeps the target square in place. The exact target-then-dropped tree is retained even when its face label is normalized. No creature simulation, movement, pattern matching, eye closing, or SPLIT/undo history is implemented.</p>
-      </footer>
+      <section class="recipe-panel" aria-labelledby="recipe-title">
+        <h2 id="recipe-title">Buildable expression recipes</h2>
+        <ul id="recipe-list" class="recipe-list"></ul>
+        <p class="recipe-note">The listed pairs match the combination logic. The owner-requested move-left example is active in this prototype only; its movement rule remains open in the language summary.</p>
+      </section>
     </main>
   </body>
 </html>

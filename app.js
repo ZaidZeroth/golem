@@ -58,7 +58,7 @@
     UP: { id: "up", category: "filter", label: "UP", reading: "the upward direction" },
     HAND: { id: "hand", category: "sense-source", label: "HAND", reading: "touch", senseText: "touch" },
     EYE: { id: "eye", category: "sense-source", label: "SEE", reading: "sight", senseText: "seeing" },
-    FEET: { id: "feet", category: "parked", label: "FEET", reading: "movement (not wired in this draft)" },
+    FEET: { id: "feet", category: "action-part", label: "FEET", reading: "feet used for movement" },
     DO: { id: "do", category: "operator", label: "DO" },
     WHILE: { id: "while", category: "operator", label: "WHILE" },
     AND: { id: "and", category: "operator", label: "AND" },
@@ -111,6 +111,15 @@
       if (colorMask === left.colorMask && colorMask === right.colorMask) return null;
       const mixed = mixedColors[colorMask];
       if (mixed) return provisionalMeaning(mixed.id, "color-state", mixed.label, mixed.reading, { colorMask });
+    }
+    if (ids === pair("feet", "left")) {
+      return provisionalMeaning("left-feet", "action-source", "LEFT FEET", "feet oriented to move left");
+    }
+    if (ids === pair("do", "left-feet")) {
+      return provisionalMeaning(
+        "do-move-left", "motive", "MOVE LEFT",
+        "move slowly to the left continuously; without a WHILE condition, keep attempting as if WHILE TRUE"
+      );
     }
     const notRedIds = pair("not", "red");
     if (ids === pair("do", "red")) {
@@ -266,6 +275,7 @@
     const fist = join(words.NOT, words.HAND);
     const combine = join(words.HAND, words.HAND);
     const left = join(words.RIGHT, words.NOT);
+    const leftFeet = join(words.FEET, left);
     const notEye = join(words.NOT, words.EYE);
     const seeRed = join(words.EYE, words.RED);
     const seeNotRed = join(words.EYE, notRed);
@@ -290,6 +300,8 @@
       [words.HAND, words.HAND],
       [words.RIGHT, words.NOT],
       [left, words.NOT],
+      [words.FEET, left],
+      [words.DO, leftFeet],
       [words.NOT, words.EYE],
       [words.DO, words.EYE],
       [words.DO, notEye],
@@ -348,6 +360,9 @@
     targetId: null,
     layout: { size: 56, cell: 70, columns: 1, width: 1, height: 1, dpr: 1 }
   };
+  const movementSpeed = 16;
+  let movementTimer = null;
+  let lastMovementTime = null;
 
   function shuffle(items) {
     for (let i = items.length - 1; i > 0; i -= 1) {
@@ -503,6 +518,13 @@
         context.fillStyle = "#aaa7a0";
         context.fillRect(block.x, block.y, size, size);
       }
+      if (describe(block.contents).id === "do-move-left") {
+        context.strokeStyle = "#d4e2a4";
+        context.lineWidth = 2;
+        context.setLineDash([4, 3]);
+        context.strokeRect(block.x + 2, block.y + 2, size - 4, size - 4);
+        context.setLineDash([]);
+      }
       if (target || selected || focused) {
         context.strokeStyle = selected ? "#f4c27a" : target ? "#ffe19a" : "#e8dfc9";
         context.lineWidth = selected || target ? 3 : 2;
@@ -535,7 +557,10 @@
     }
     const meaning = describe(selected.contents);
     const provisional = meaning.certainty === "provisional" || meaning.certainty === "unresolved";
-    detail.innerHTML = `<dl class="detail-list"><div><dt>Construction</dt><dd class="detail-construction"></dd></div><div><dt>Natural language</dt><dd class="detail-reading"></dd><small class="reading-status">${provisional ? "Proposed reading · behavior not simulated" : "Element"}</small></div></dl>`;
+    const readingStatus = meaning.id === "do-move-left"
+      ? "Owner-requested prototype behavior · movement rule remains open in the language summary"
+      : provisional ? "Proposed reading · behavior not simulated" : "Element";
+    detail.innerHTML = `<dl class="detail-list"><div><dt>Construction</dt><dd class="detail-construction"></dd></div><div><dt>Natural language</dt><dd class="detail-reading"></dd><small class="reading-status">${readingStatus}</small></div></dl>`;
     detail.querySelector(".detail-construction").textContent = construction(selected.contents);
     detail.querySelector(".detail-reading").textContent = plainLanguage(selected.contents);
   }
@@ -558,6 +583,86 @@
   function canvasPoint(event) {
     const rect = canvas.getBoundingClientRect();
     return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+  }
+
+  function overlapsAnotherBlock(block, x, y) {
+    const size = state.layout.size;
+    return state.blocks.some(other => other.id !== block.id &&
+      x < other.x + size && x + size > other.x &&
+      y < other.y + size && y + size > other.y);
+  }
+
+  function dropInClearing(block, desiredX, desiredY) {
+    const size = state.layout.size;
+    const maxX = state.layout.width - size;
+    const maxY = state.layout.height - size;
+    const x = Math.max(0, Math.min(maxX, desiredX));
+    const y = Math.max(0, Math.min(maxY, desiredY));
+    const frame = imageFrame();
+    if (isSafeCell(x, y, size, frame) && !overlapsAnotherBlock(block, x, y)) {
+      block.x = x;
+      block.y = y;
+      return true;
+    }
+
+    const slots = clearingCells(state.layout.cell, size)
+      .filter(slot => !overlapsAnotherBlock(block, slot.x, slot.y));
+    slots.sort((a, b) =>
+      Math.hypot(a.x - x, a.y - y) - Math.hypot(b.x - x, b.y - y)
+    );
+    if (!slots.length) return false;
+    block.x = slots[0].x;
+    block.y = slots[0].y;
+    return true;
+  }
+
+  function tickActiveMovement() {
+    const now = performance.now();
+    const elapsed = lastMovementTime === null ? 0 : Math.min((now - lastMovementTime) / 1000, 0.1);
+    lastMovementTime = now;
+    const movers = state.blocks.filter(block => describe(block.contents).id === "do-move-left");
+    if (!movers.length) {
+      window.clearInterval(movementTimer);
+      movementTimer = null;
+      lastMovementTime = null;
+      return;
+    }
+
+    let moved = false;
+    const frame = imageFrame();
+    for (const block of movers) {
+      if (state.drag?.block.id === block.id) continue;
+      const nextX = Math.max(0, block.x - movementSpeed * elapsed);
+      const blocked = nextX === block.x ||
+        !isSafeCell(nextX, block.y, state.layout.size, frame) ||
+        overlapsAnotherBlock(block, nextX, block.y);
+      if (blocked) {
+        if (!block.movementBlocked) {
+          block.movementBlocked = true;
+          setStatus("move left keeps attempting, but this clay is blocked by another square or the clearing edge.");
+        }
+        continue;
+      }
+      if (block.movementBlocked) {
+        block.movementBlocked = false;
+        setStatus("move left is moving again.");
+      }
+      block.x = nextX;
+      moved = true;
+    }
+    if (moved) drawMap();
+  }
+
+  function startActiveMovement() {
+    if (movementTimer || !state.blocks.some(block => describe(block.contents).id === "do-move-left")) return;
+    lastMovementTime = performance.now();
+    movementTimer = window.setInterval(tickActiveMovement, 50);
+  }
+
+  function stopActiveMovement() {
+    if (movementTimer) window.clearInterval(movementTimer);
+    movementTimer = null;
+    lastMovementTime = null;
   }
 
   function selectOrCombine(block) {
@@ -599,7 +704,12 @@
     state.focusedId = target.id;
     renderDetail();
     drawMap();
-    setStatus(`${targetLabel} + ${droppedLabel} → ${faceLabel(target.contents)}. ${describe(target.contents).certainty === "provisional" ? "This proposed expression has no active game behavior yet." : "The two squares have merged into one."}`);
+    if (describe(target.contents).id === "do-move-left") {
+      setStatus(`${targetLabel} + ${droppedLabel} → ${faceLabel(target.contents)}. This provisional action keeps trying to move slowly left (default WHILE TRUE).`);
+      startActiveMovement();
+    } else {
+      setStatus(`${targetLabel} + ${droppedLabel} → ${faceLabel(target.contents)}. ${describe(target.contents).certainty === "provisional" ? "This proposed expression has no active game behavior yet." : "The two squares have merged into one."}`);
+    }
     return true;
   }
 
@@ -645,12 +755,25 @@
       selectOrCombine(drag.block);
       return;
     }
-    if (!target || !combine(target, drag.block)) {
-      drag.block.x = drag.startX;
-      drag.block.y = drag.startY;
-      drawMap();
-      if (!target) setStatus("Drop a square onto another square to try a combination.");
+    if (target && combine(target, drag.block)) {
+      startActiveMovement();
+      return;
     }
+    if (dropInClearing(drag.block, drag.block.x, drag.block.y)) {
+      state.selectedId = drag.block.id;
+      state.focusedId = drag.block.id;
+      renderDetail();
+      drawMap();
+      setStatus(target
+        ? "Those squares do not combine; the dragged clay was placed in the clearing."
+        : "Clay placed in the clearing.");
+      startActiveMovement();
+      return;
+    }
+    drag.block.x = drag.startX;
+    drag.block.y = drag.startY;
+    drawMap();
+    setStatus("There is no free place in the clearing for that clay.");
   });
 
   canvas.addEventListener("pointercancel", () => {
@@ -683,6 +806,7 @@
   });
 
   resetButton.addEventListener("click", () => {
+    stopActiveMovement();
     state.blocks = makeInitialBlocks();
     state.selectedId = null;
     state.focusedId = null;
