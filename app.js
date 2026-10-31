@@ -4,6 +4,7 @@
   const canvas = document.querySelector("#map-canvas");
   const context = canvas.getContext("2d");
   const mapBoard = document.querySelector(".map-board");
+  const elementBank = document.querySelector("#element-bank");
   const detail = document.querySelector("#detail-content");
   const status = document.querySelector("#status");
   const resetButton = document.querySelector("#reset-button");
@@ -16,6 +17,21 @@
   const miniGolemImage = new Image();
   miniGolemImage.src = "assets/golem-mini-golem-front-64px.png";
   miniGolemImage.addEventListener("load", () => drawMap());
+  const elementSpritePaths = {
+    eye: "assets/golem-clay-eye-64px.png",
+    hand: "assets/golem-clay-hand-open-64px.png",
+    fist: "assets/golem-clay-fist-64px.png",
+    feet: "assets/golem-clay-feet-64px.png",
+    left: "assets/golem-clay-arrow-left-64px.png",
+    right: "assets/golem-clay-arrow-right-64px.png",
+    up: "assets/golem-clay-arrow-up-64px.png"
+  };
+  const elementSprites = Object.fromEntries(Object.entries(elementSpritePaths).map(([meaning, path]) => {
+    const sprite = new Image();
+    sprite.src = path;
+    sprite.addEventListener("load", () => drawMap());
+    return [meaning, sprite];
+  }));
   const clayTintCache = new Map();
   const miniGolemTintCache = new Map();
   const clearingPolygon = [
@@ -47,10 +63,9 @@
   }
 
   function makeInitialBlocks() {
-    return elementWords.flatMap((word, index) => [
-      makeBlock(`block-${index}-a`, element(word)),
-      makeBlock(`block-${index}-b`, element(word))
-    ]);
+    // The element bank is an endless source, so start with one world copy of
+    // each base word instead of pre-filling the clearing with duplicates.
+    return elementWords.map((word, index) => makeBlock(`block-${index}`, element(word)));
   }
 
   const elementMeanings = {
@@ -61,7 +76,7 @@
     RIGHT: { id: "right", category: "filter", label: "RIGHT", reading: "the right direction" },
     UP: { id: "up", category: "filter", label: "UP", reading: "the upward direction" },
     HAND: { id: "hand", category: "sense-source", label: "HAND", reading: "touch", senseText: "touch" },
-    EYE: { id: "eye", category: "sense-source", label: "SEE", reading: "sight", senseText: "seeing" },
+    EYE: { id: "eye", category: "sense-source", label: "EYE", reading: "an eye", senseText: "seeing" },
     FEET: { id: "feet", category: "action-part", label: "FEET", reading: "feet used for movement" },
     DO: { id: "do", category: "operator", label: "DO" },
     WHILE: { id: "while", category: "operator", label: "WHILE" },
@@ -119,10 +134,31 @@
     if (ids === pair("feet", "left")) {
       return provisionalMeaning("left-feet", "action-source", "LEFT FEET", "feet oriented to move left");
     }
+    if (ids === pair("feet", "right")) {
+      return provisionalMeaning("right-feet", "action-source", "RIGHT FEET", "feet oriented to move right");
+    }
     if (ids === pair("do", "left-feet")) {
       return provisionalMeaning(
         "do-move-left", "motive", "MOVE LEFT",
         "move slowly to the left continuously; without a WHILE condition, keep attempting as if WHILE TRUE"
+      );
+    }
+    if (ids === pair("do", "right-feet")) {
+      return provisionalMeaning(
+        "do-move-right", "motive", "MOVE RIGHT",
+        "move slowly to the right continuously; provisional owner-requested prototype behavior"
+      );
+    }
+    if (ids === pair("do", "feet")) {
+      return provisionalMeaning(
+        "do-move-random", "motive", "MOVE",
+        "move slowly in a random cardinal direction, changing direction occasionally; tentative prototype interpretation"
+      );
+    }
+    if (ids === pair("right", "do-move-random")) {
+      return provisionalMeaning(
+        "do-move-right", "motive", "MOVE RIGHT",
+        "move slowly to the right continuously; tentative directional prototype interpretation"
       );
     }
     const notRedIds = pair("not", "red");
@@ -176,13 +212,13 @@
       const sightReading = ["left", "right", "up"].includes(filter.id)
         ? `seeing something to the ${filter.label.toLowerCase()}`
         : `seeing ${filter.reading}`;
-      return provisionalMeaning(`while-sight-${filter.id}`, "sense", `WHILE SEE ${filter.label}`, `while ${sightReading}`, { senseText: `while ${sightReading}` });
+      return provisionalMeaning(`while-sight-${filter.id}`, "sense", `SEE ${filter.label}`, `while ${sightReading}`, { senseText: `while ${sightReading}` });
     }
     if ((left.id === "while" && right.category === "sense-source") ||
         (right.id === "while" && left.category === "sense-source")) {
       const sense = left.id === "while" ? right : left;
       const whilePhrases = {
-        eye: "while seeing",
+        eye: "while seeing anything",
         "not-eye": "while not seeing",
         hand: "while touching",
         fist: "while holding",
@@ -193,7 +229,22 @@
         "right-fist": "while holding with the right hand"
       };
       const phrase = whilePhrases[sense.id] || `while sensing ${sense.senseText || sense.reading}`;
-      return provisionalMeaning(`while-${sense.id}`, "sense", `WHILE ${sense.label}`, phrase, { senseText: phrase });
+      const whileLabels = {
+        eye: "SEE",
+        "not-eye": "NOT SEE",
+        hand: "TOUCH",
+        fist: "HOLD",
+        fit: "FIT",
+        "left-hand": "LEFT TOUCH",
+        "right-hand": "RIGHT TOUCH",
+        "left-fist": "LEFT HOLD",
+        "right-fist": "RIGHT HOLD"
+      };
+      const label = whileLabels[sense.id] || sense.label;
+      return provisionalMeaning(`while-${sense.id}`, "sense", label, phrase, {
+        senseText: phrase,
+        ...(sense.id === "eye" ? { sightRangeCells: 5 } : {})
+      });
     }
     if ((left.id === "while" && ["sense", "filter"].includes(right.category)) ||
         (right.id === "while" && ["sense", "filter"].includes(left.category))) {
@@ -201,7 +252,7 @@
       const phrase = sense.id === "not-red"
         ? "while I contain no red pigment"
         : `while ${sense.senseText || sense.reading}`;
-      return provisionalMeaning(`while-${sense.id}`, "sense", `WHILE ${sense.label}`, phrase, { senseText: phrase });
+      return provisionalMeaning(`while-${sense.id}`, "sense", sense.label, phrase, { senseText: phrase });
     }
     if ((left.id === "do" && ["hand", "fist", "red", "eye", "not-eye", "combine", "left-hand", "right-hand", "left-fist", "right-fist"].includes(right.id)) ||
         (right.id === "do" && ["hand", "fist", "red", "eye", "not-eye", "combine", "left-hand", "right-hand", "left-fist", "right-fist"].includes(left.id))) {
@@ -210,7 +261,7 @@
         hand: ["DROP", "drop the held piece"],
         fist: ["GRAB", "grab a piece"],
         red: ["ADD RED", "add red pigment"],
-        eye: ["OPEN EYES", "open the eyes"],
+        eye: ["LOOK", "look"],
         "not-eye": ["DON'T LOOK", "don't look"],
         combine: ["COMBINE", "combine the blocks held in both hands"],
         "left-hand": ["DROP LEFT", "drop what is in the left hand"],
@@ -219,7 +270,7 @@
         "right-fist": ["GRAB RIGHT", "grab with the right hand"]
       };
       const [label, reading] = actions[action.id];
-      return provisionalMeaning(`do-${action.id}`, "motive", `DO ${label}`, reading);
+      return provisionalMeaning(`do-${action.id}`, "motive", label, reading);
     }
     if ((left.id === "in" && right.id === "me") || (right.id === "in" && left.id === "me")) {
       return provisionalMeaning("inside-me", "inspect", "IN ME", "inside me");
@@ -233,7 +284,7 @@
         (right.category === "sense" && left.category === "motive")) {
       const sense = left.category === "sense" ? left : right;
       const motive = left.category === "motive" ? left : right;
-      return provisionalMeaning("golem-pair", "golem", "GOLEM", `a golem with ${sense.reading}, set to ${motive.reading}; activation is not defined`, { sense, motive, colorIntentMask: motive.colorIntentMask || 0 });
+      return provisionalMeaning("golem-pair", "golem", "GOLEM", `a golem with ${sense.reading}, set to ${motive.reading}; activation is not defined`, { sense, motive });
     }
     if ((left.category === "sense" && ["and", "or"].includes(right.id)) ||
         (right.category === "sense" && ["and", "or"].includes(left.id))) {
@@ -261,97 +312,6 @@
     return compound(leftExpression, rightExpression, meaning);
   }
 
-  function buildRecipeExamples() {
-    const words = Object.fromEntries(elementWords.map(word => [word, element(word)]));
-    const join = (left, right) => left && right ? resultExpression(left, right) : null;
-    const recipes = new Set();
-    const bothOrders = (left, right) => {
-      for (const [first, second] of [[left, right], [right, left]]) {
-        const result = join(first, second);
-        if (result) recipes.add(`${faceLabel(first)} + ${faceLabel(second)} → ${faceLabel(result)}`);
-      }
-    };
-
-    const notRed = join(words.NOT, words.RED);
-    const yellow = join(words.RED, words.GREEN);
-    const magenta = join(words.RED, words.BLUE);
-    const cyan = join(words.GREEN, words.BLUE);
-    const fist = join(words.NOT, words.HAND);
-    const combine = join(words.HAND, words.HAND);
-    const left = join(words.RIGHT, words.NOT);
-    const leftFeet = join(words.FEET, left);
-    const notEye = join(words.NOT, words.EYE);
-    const seeRed = join(words.EYE, words.RED);
-    const seeNotRed = join(words.EYE, notRed);
-    const whileEye = join(words.WHILE, words.EYE);
-    const whileHand = join(words.WHILE, words.HAND);
-    const whileFit = join(words.WHILE, words.FIT);
-    const whileHandAnd = join(whileHand, words.AND);
-    const doFist = join(words.DO, fist);
-    const inMe = join(words.IN, words.ME);
-
-    [
-      [words.RED, words.GREEN],
-      [words.RED, words.BLUE],
-      [words.GREEN, words.BLUE],
-      [magenta, words.GREEN],
-      [yellow, words.BLUE],
-      [cyan, words.RED],
-      [words.DO, words.RED],
-      [words.NOT, words.RED],
-      [words.NOT, words.HAND],
-      [words.NOT, fist],
-      [words.HAND, words.HAND],
-      [words.RIGHT, words.NOT],
-      [left, words.NOT],
-      [words.FEET, left],
-      [words.DO, leftFeet],
-      [words.NOT, words.EYE],
-      [words.DO, words.EYE],
-      [words.DO, notEye],
-      [words.RIGHT, words.HAND],
-      [left, fist],
-      [words.EYE, words.RED],
-      [words.EYE, notRed],
-      [words.EYE, words.RIGHT],
-      [words.WHILE, words.EYE],
-      [words.WHILE, seeRed],
-      [words.WHILE, seeNotRed],
-      [words.WHILE, words.HAND],
-      [words.WHILE, fist],
-      [words.WHILE, words.FIT],
-      [words.WHILE, notRed],
-      [words.WHILE, seeNotRed],
-      [words.WHILE, join(words.RIGHT, words.HAND)],
-      [whileHand, words.AND],
-      [whileHandAnd, whileFit],
-      [whileEye, words.OR],
-      [join(whileEye, words.OR), whileHand],
-      [words.DO, words.HAND],
-      [words.DO, fist],
-      [words.DO, words.RED],
-      [words.DO, words.EYE],
-      [words.DO, notEye],
-      [words.DO, combine],
-      [words.DO, join(left, words.HAND)],
-      [words.DO, join(words.RIGHT, fist)],
-      [words.IN, words.ME],
-      [inMe, notRed],
-      [whileHand, doFist]
-    ].forEach(([first, second]) => bothOrders(first, second));
-
-    return [...recipes].sort((a, b) => a.localeCompare(b));
-  }
-
-  function renderRecipes() {
-    const list = document.querySelector("#recipe-list");
-    for (const recipe of buildRecipeExamples()) {
-      const item = document.createElement("li");
-      item.textContent = recipe;
-      list.append(item);
-    }
-  }
-
   function plainLanguage(expression) {
     return describe(expression).reading || "No reading has been agreed for this expression.";
   }
@@ -362,8 +322,10 @@
     focusedId: null,
     drag: null,
     targetId: null,
-    layout: { size: 56, cell: 70, columns: 1, width: 1, height: 1, dpr: 1 }
+    layout: { size: 56, cell: 70, columns: 1, width: 1, height: 1, dpr: 1 },
+    paletteCopyCount: 0
   };
+  let lastPaletteDropTime = 0;
   const movementSpeed = 16;
   let movementTimer = null;
   let lastMovementTime = null;
@@ -384,7 +346,7 @@
     const boardStyle = window.getComputedStyle(mapBoard);
     const horizontalPadding = parseFloat(boardStyle.paddingLeft) + parseFloat(boardStyle.paddingRight);
     const width = Math.max(280, mapBoard.clientWidth - horizontalPadding);
-    const size = Math.max(32, Math.min(54, width / 14));
+    const size = Math.max(44, Math.min(64, width / 14));
     const cell = size + 6;
     const columns = Math.max(2, Math.floor((width - 12) / cell));
     const height = Math.max(540, width * (992 / 1586));
@@ -459,21 +421,54 @@
 
   function arrangeBlocks() {
     const { size } = state.layout;
-    let cell = state.layout.cell;
-    let slots = clearingCells(cell, size);
-    while (slots.length < state.blocks.length && cell > size + 2) {
-      cell -= 2;
-      slots = clearingCells(cell, size);
+    const frame = imageFrame();
+    const placed = [];
+    const placedBlocks = shuffle([...state.blocks]);
+    state.blocks.forEach(block => { block.unplaced = false; });
+    const overlapsPlaced = (x, y) => placed.some(other =>
+      x < other.x + size + 2 && x + size + 2 > other.x &&
+      y < other.y + size + 2 && y + size + 2 > other.y
+    );
+    const isOpen = (x, y, strictClearing) =>
+      (strictClearing ? isSafeCell(x, y, size, frame) : insideClearing(x, y, size, frame)) &&
+      !overlapsPlaced(x, y);
+
+    // Try randomized positions in the clearing. If random packing leaves a
+    // small awkward gap, use a fine scan instead of sending blocks to (0, 0).
+    const findOpenPosition = (strictClearing) => {
+      const maxX = state.layout.width - size;
+      const maxY = state.layout.height - size;
+      for (let attempt = 0; attempt < 5000; attempt += 1) {
+        const x = Math.random() * maxX;
+        const y = Math.random() * maxY;
+        if (isOpen(x, y, strictClearing)) return { x, y };
+      }
+      for (let y = 0; y <= maxY; y += 2) {
+        for (let x = 0; x <= maxX; x += 2) {
+          if (isOpen(x, y, strictClearing)) return { x, y };
+        }
+      }
+      return null;
+    };
+
+    for (const block of placedBlocks) {
+      // The center-only fallback is used only for an unusually tight narrow
+      // viewport; it still keeps the clay inside the marked clearing.
+      const position = findOpenPosition(true) || findOpenPosition(false);
+      if (!position) {
+        block.unplaced = true;
+        continue;
+      }
+      block.unplaced = false;
+      block.x = position.x;
+      block.y = position.y;
+      placed.push(block);
     }
-    state.layout.cell = cell;
-    state.layout.columns = Math.floor(state.layout.width / cell);
-    state.layout.rows = Math.floor(state.layout.height / cell);
-    shuffle(slots);
-    state.blocks.forEach((block, index) => {
-      const slot = slots[index] || { x: 0, y: 0 };
-      block.x = slot.x;
-      block.y = slot.y;
-    });
+
+    // Keep the spacing metadata aligned with the canvas even though placement
+    // is free-form rather than restricted to a grid.
+    state.layout.columns = Math.floor(state.layout.width / state.layout.cell);
+    state.layout.rows = Math.floor(state.layout.height / state.layout.cell);
   }
 
   function tintedClay(colorMask) {
@@ -538,21 +533,50 @@
       context.fillRect(0, 0, width, height);
     }
     for (const block of state.blocks) {
+      if (block.unplaced) continue;
       const selected = block.id === state.selectedId;
       const focused = block.id === state.focusedId;
       const target = block.id === state.targetId;
       const meaning = describe(block.contents);
       const isCreature = ["sense", "motive", "golem"].includes(meaning.category);
+      const sightIsTrue = meaning.id === "while-eye" && block.senseActive;
       const colorMask = meaning.colorIntentMask ?? meaning.colorMask ?? 0;
-      if (isCreature && miniGolemImage.complete && miniGolemImage.naturalWidth) {
+      const elementSprite = elementSprites[meaning.id];
+      if (sightIsTrue) {
+        const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches === true;
+        const pulse = reducedMotion ? 1 : 0.5 + (Math.sin(performance.now() / 260) + 1) * 0.18;
+        const centerX = block.x + size / 2;
+        const centerY = block.y + size / 2;
+        const radius = size * 0.9;
+        const glow = context.createRadialGradient(centerX, centerY, size * 0.12, centerX, centerY, radius);
+        glow.addColorStop(0, `rgb(255 224 132 / ${Math.round(pulse * 72)}%)`);
+        glow.addColorStop(0.55, `rgb(255 214 105 / ${Math.round(pulse * 38)}%)`);
+        glow.addColorStop(1, "rgb(255 214 105 / 0%)");
+        context.save();
+        context.fillStyle = glow;
+        context.beginPath();
+        context.arc(centerX, centerY, radius, 0, Math.PI * 2);
+        context.fill();
+        context.restore();
+      }
+      if (elementSprite?.complete && elementSprite.naturalWidth) {
+        context.drawImage(elementSprite, block.x, block.y, size, size);
+      } else if (isCreature && miniGolemImage.complete && miniGolemImage.naturalWidth) {
+        context.save();
+        // The brighter face and crisp dark features read against both the clay
+        // square and the forest; the soft rim separates the small limbs too.
+        context.filter = "brightness(1.12) contrast(1.5)";
+        context.shadowColor = "rgb(255 235 185 / 92%)";
+        context.shadowBlur = Math.max(1.5, size * 0.035);
         context.drawImage(tintedMiniGolem(colorMask), block.x, block.y, size, size);
+        context.restore();
       } else if (clayImage.complete && clayImage.naturalWidth) {
         context.drawImage(tintedClay(meaning.colorMask), block.x, block.y, size, size);
       } else {
         context.fillStyle = "#aaa7a0";
         context.fillRect(block.x, block.y, size, size);
       }
-      if (meaning.id === "do-move-left") {
+      if (["do-move-left", "do-move-right", "do-move-random"].includes(meaning.id)) {
         context.strokeStyle = "#d4e2a4";
         context.lineWidth = 2;
         context.setLineDash([4, 3]);
@@ -569,7 +593,7 @@
       context.lineWidth = 2.4;
       context.textAlign = "center";
       context.textBaseline = "middle";
-      context.font = `800 ${faceFontSize(faceLabel(block.contents), size)}px "Atkinson Hyperlegible Next", system-ui, sans-serif`;
+      context.font = `${faceFontSize(faceLabel(block.contents), size)}px "Creepster", Georgia, serif`;
       context.shadowColor = "rgb(255 247 224 / 90%)";
       context.shadowBlur = 2;
       const label = faceLabel(block.contents);
@@ -587,14 +611,23 @@
   function renderDetail() {
     const selected = allBlocks().find(block => block.id === state.selectedId);
     if (!selected) {
-      detail.innerHTML = '<p class="detail-placeholder">Select a square to see its exact construction and natural-language reading.</p>';
+      detail.innerHTML = '<p class="detail-placeholder">No block selected.</p>';
       return;
     }
     const meaning = describe(selected.contents);
     const provisional = meaning.certainty === "provisional" || meaning.certainty === "unresolved";
-    const readingStatus = meaning.id === "do-move-left"
-      ? "Owner-requested prototype behavior · movement rule remains open in the language summary"
-      : provisional ? "Proposed reading · behavior not simulated" : "Element";
+    const sightStatus = meaning.id === "while-eye"
+      ? selected.senseActive
+        ? "Sensing true · clay within 5 cells"
+        : "Sensing false · no clay within 5 cells"
+      : null;
+    const movementStatuses = {
+      "do-move-left": "Prototype movement experiment · the language rule remains open",
+      "do-move-right": "Prototype movement experiment · the language rule remains open",
+      "do-move-random": "Tentative random-walk experiment · the language rule remains open"
+    };
+    const readingStatus = sightStatus || movementStatuses[meaning.id] ||
+      (provisional ? "Proposed reading · behavior not simulated" : "Element");
     detail.innerHTML = `<dl class="detail-list"><div><dt>Construction</dt><dd class="detail-construction"></dd></div><div><dt>Natural language</dt><dd class="detail-reading"></dd><small class="reading-status">${readingStatus}</small></div></dl>`;
     detail.querySelector(".detail-construction").textContent = construction(selected.contents);
     detail.querySelector(".detail-reading").textContent = plainLanguage(selected.contents);
@@ -608,6 +641,7 @@
     const { size } = state.layout;
     for (let i = state.blocks.length - 1; i >= 0; i -= 1) {
       const block = state.blocks[i];
+      if (block.unplaced) continue;
       if (block.id === exceptId) continue;
       if (point.x >= block.x && point.x <= block.x + size &&
           point.y >= block.y && point.y <= block.y + size) return block;
@@ -620,9 +654,15 @@
     return { x: event.clientX - rect.left, y: event.clientY - rect.top };
   }
 
+  function insideClearing(x, y, size, frame) {
+    const centerX = (x + size / 2 - frame.x) / frame.width;
+    const centerY = (y + size / 2 - frame.y) / frame.height;
+    return pointInPolygon(centerX, centerY);
+  }
+
   function overlapsAnotherBlock(block, x, y) {
     const size = state.layout.size;
-    return state.blocks.some(other => other.id !== block.id &&
+    return state.blocks.some(other => !other.unplaced && other.id !== block.id &&
       x < other.x + size && x + size > other.x &&
       y < other.y + size && y + size > other.y);
   }
@@ -634,29 +674,127 @@
     const x = Math.max(0, Math.min(maxX, desiredX));
     const y = Math.max(0, Math.min(maxY, desiredY));
     const frame = imageFrame();
-    if (isSafeCell(x, y, size, frame) && !overlapsAnotherBlock(block, x, y)) {
+    const canPlace = (candidateX, candidateY) =>
+      insideClearing(candidateX, candidateY, size, frame) &&
+      !overlapsAnotherBlock(block, candidateX, candidateY);
+    if (canPlace(x, y)) {
+      block.unplaced = false;
       block.x = x;
       block.y = y;
       return true;
     }
 
-    const slots = clearingCells(state.layout.cell, size)
-      .filter(slot => !overlapsAnotherBlock(block, slot.x, slot.y));
-    slots.sort((a, b) =>
-      Math.hypot(a.x - x, a.y - y) - Math.hypot(b.x - x, b.y - y)
-    );
-    if (!slots.length) return false;
-    block.x = slots[0].x;
-    block.y = slots[0].y;
-    return true;
+    // Search continuously around the requested point, then across the rest of
+    // the clearing. There is no fixed clay count or safe-cell-slot ceiling.
+    const step = Math.max(2, Math.floor(size / 16));
+    const maxRadius = Math.max(state.layout.width, state.layout.height);
+    for (let radius = step; radius <= maxRadius; radius += step) {
+      for (let offset = -radius; offset <= radius; offset += step) {
+        const candidates = [
+          [x + offset, y - radius], [x + offset, y + radius],
+          [x - radius, y + offset], [x + radius, y + offset]
+        ];
+        for (const [candidateX, candidateY] of candidates) {
+          const boundedX = Math.max(0, Math.min(maxX, candidateX));
+          const boundedY = Math.max(0, Math.min(maxY, candidateY));
+          if (!canPlace(boundedX, boundedY)) continue;
+          block.unplaced = false;
+          block.x = boundedX;
+          block.y = boundedY;
+          return true;
+        }
+      }
+    }
+    return false;
   }
+
+  function addPaletteElement(word, point, tryCombine) {
+    const target = tryCombine ? hitTest(point) : null;
+    const block = makeBlock(`bank-copy-${++state.paletteCopyCount}`, element(word));
+    block.x = point.x - state.layout.size / 2;
+    block.y = point.y - state.layout.size / 2;
+    state.blocks.push(block);
+    if (target && combine(target, block)) {
+      startActiveMovement();
+      return;
+    }
+    if (!dropInClearing(block, block.x, block.y)) {
+      state.blocks = state.blocks.filter(candidate => candidate.id !== block.id);
+      setStatus("The clearing is full; there is no open space for another clay square.");
+      return;
+    }
+    state.selectedId = block.id;
+    state.focusedId = block.id;
+    renderDetail();
+    drawMap();
+    setStatus(tryCombine && target
+      ? `${word.toLowerCase()} does not combine with that square yet; a copy was placed in the clearing.`
+      : `A copy of ${word.toLowerCase()} was added to the clearing. The bank source remains.`);
+    startActiveMovement();
+  }
+
+  function renderElementBank() {
+    for (const word of elementWords) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "element-token";
+      const meaning = describe(element(word));
+      const spritePath = elementSpritePaths[meaning.id];
+      if (spritePath) {
+        const sprite = document.createElement("img");
+        sprite.src = spritePath;
+        sprite.alt = "";
+        sprite.className = "element-token-sprite";
+        sprite.draggable = false;
+        button.append(sprite);
+      }
+      const label = document.createElement("span");
+      label.textContent = faceLabel(element(word));
+      button.append(label);
+      button.dataset.elementWord = word;
+      button.draggable = true;
+      button.setAttribute("aria-label", `Add a copy of ${faceLabel(element(word))} to the game world`);
+      button.addEventListener("dragstart", event => {
+        event.dataTransfer.setData("text/plain", word);
+        event.dataTransfer.effectAllowed = "copy";
+      });
+      elementBank.append(button);
+    }
+  }
+
+  elementBank.addEventListener("click", event => {
+    const button = event.target.closest("[data-element-word]");
+    if (!button || performance.now() - lastPaletteDropTime < 400) return;
+    addPaletteElement(button.dataset.elementWord, {
+      x: state.layout.width / 2,
+      y: state.layout.height / 2
+    }, false);
+  });
+
+  canvas.addEventListener("dragover", event => {
+    if (event.dataTransfer?.types.includes("text/plain")) {
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "copy";
+    }
+  });
+
+  canvas.addEventListener("drop", event => {
+    event.preventDefault();
+    const word = event.dataTransfer?.getData("text/plain");
+    if (!elementMeanings[word]) return;
+    lastPaletteDropTime = performance.now();
+    addPaletteElement(word, canvasPoint(event), true);
+  });
 
   function tickActiveMovement() {
     const now = performance.now();
     const elapsed = lastMovementTime === null ? 0 : Math.min((now - lastMovementTime) / 1000, 0.1);
     lastMovementTime = now;
-    const movers = state.blocks.filter(block => describe(block.contents).id === "do-move-left");
-    if (!movers.length) {
+    const movers = state.blocks.filter(block =>
+      ["do-move-left", "do-move-right", "do-move-random"].includes(describe(block.contents).id)
+    );
+    const sightSensors = state.blocks.filter(block => describe(block.contents).id === "while-eye");
+    if (!movers.length && !sightSensors.length) {
       window.clearInterval(movementTimer);
       movementTimer = null;
       lastMovementTime = null;
@@ -664,32 +802,74 @@
     }
 
     let moved = false;
+    let sightChanged = false;
     const frame = imageFrame();
     for (const block of movers) {
       if (state.drag?.block.id === block.id) continue;
-      const nextX = Math.max(0, block.x - movementSpeed * elapsed);
-      const blocked = nextX === block.x ||
-        !isSafeCell(nextX, block.y, state.layout.size, frame) ||
-        overlapsAnotherBlock(block, nextX, block.y);
+      const movementId = describe(block.contents).id;
+      if (movementId === "do-move-random" && (!block.nextDirectionChange || now >= block.nextDirectionChange)) {
+        chooseRandomDirection(block, now);
+      }
+      const direction = movementId === "do-move-left"
+        ? { x: -1, y: 0 }
+        : movementId === "do-move-right"
+          ? { x: 1, y: 0 }
+          : block.randomDirection;
+      const nextX = Math.max(0, Math.min(state.layout.width - state.layout.size, block.x + direction.x * movementSpeed * elapsed));
+      const nextY = Math.max(0, Math.min(state.layout.height - state.layout.size, block.y + direction.y * movementSpeed * elapsed));
+      const blocked = (nextX === block.x && nextY === block.y) ||
+        !isSafeCell(nextX, nextY, state.layout.size, frame) ||
+        overlapsAnotherBlock(block, nextX, nextY);
       if (blocked) {
         if (!block.movementBlocked) {
           block.movementBlocked = true;
-          setStatus("move left keeps attempting, but this clay is blocked by another square or the clearing edge.");
+          setStatus(`${faceLabel(block.contents)} keeps attempting, but this clay is blocked by another square or the clearing edge.`);
         }
+        if (movementId === "do-move-random") chooseRandomDirection(block, now);
         continue;
       }
       if (block.movementBlocked) {
         block.movementBlocked = false;
-        setStatus("move left is moving again.");
+        setStatus(`${faceLabel(block.contents)} is moving again.`);
       }
       block.x = nextX;
+      block.y = nextY;
       moved = true;
     }
-    if (moved) drawMap();
+    for (const sensor of sightSensors) {
+      const sightRange = state.layout.cell * (describe(sensor.contents).sightRangeCells || 5);
+      const wasInitialized = typeof sensor.senseActive === "boolean";
+      const isTrue = state.blocks.some(other => other.id !== sensor.id &&
+        Math.hypot(
+          (other.x + state.layout.size / 2) - (sensor.x + state.layout.size / 2),
+          (other.y + state.layout.size / 2) - (sensor.y + state.layout.size / 2)
+        ) <= sightRange);
+      if (sensor.senseActive !== isTrue) {
+        sensor.senseActive = isTrue;
+        sightChanged = true;
+        if (state.selectedId === sensor.id) renderDetail();
+        if (wasInitialized) {
+          setStatus(isTrue
+            ? "while see is true: clay is within 5 cells."
+            : "while see is false: no clay is within 5 cells.");
+        }
+      }
+    }
+    const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches === true;
+    const shouldPulse = sightSensors.some(sensor => sensor.senseActive) && !reducedMotion;
+    if (moved || sightChanged || shouldPulse) drawMap();
+  }
+
+  function chooseRandomDirection(block, now) {
+    const directions = [{ x: 1, y: 0 }, { x: -1, y: 0 }, { x: 0, y: 1 }, { x: 0, y: -1 }];
+    block.randomDirection = directions[Math.floor(Math.random() * directions.length)];
+    block.nextDirectionChange = now + 1000 + Math.random() * 1400;
   }
 
   function startActiveMovement() {
-    if (movementTimer || !state.blocks.some(block => describe(block.contents).id === "do-move-left")) return;
+    if (movementTimer || !state.blocks.some(block =>
+      ["do-move-left", "do-move-right", "do-move-random", "while-eye"].includes(describe(block.contents).id)
+    )) return;
     lastMovementTime = performance.now();
     movementTimer = window.setInterval(tickActiveMovement, 50);
   }
@@ -739,8 +919,15 @@
     state.focusedId = target.id;
     renderDetail();
     drawMap();
-    if (describe(target.contents).id === "do-move-left") {
-      setStatus(`${targetLabel} + ${droppedLabel} → ${faceLabel(target.contents)}. This provisional action keeps trying to move slowly left (default WHILE TRUE).`);
+    const movementId = describe(target.contents).id;
+    if (["do-move-left", "do-move-right", "do-move-random"].includes(movementId)) {
+      const movementNote = movementId === "do-move-random"
+        ? "This tentative prototype guess wanders slowly in random directions; the game rule is not settled."
+        : `This provisional action keeps trying to move slowly ${movementId === "do-move-left" ? "left" : "right"}; the movement rule remains open.`;
+      setStatus(`${targetLabel} + ${droppedLabel} → ${faceLabel(target.contents)}. ${movementNote}`);
+      startActiveMovement();
+    } else if (movementId === "while-eye") {
+      setStatus(`${targetLabel} + ${droppedLabel} → ${faceLabel(target.contents)}. It senses any other clay square within 5 cells and glows while the condition is true.`);
       startActiveMovement();
     } else {
       setStatus(`${targetLabel} + ${droppedLabel} → ${faceLabel(target.contents)}. ${describe(target.contents).certainty === "provisional" ? "This proposed expression has no active game behavior yet." : "The two squares have merged into one."}`);
@@ -808,7 +995,7 @@
     drag.block.x = drag.startX;
     drag.block.y = drag.startY;
     drawMap();
-    setStatus("There is no free place in the clearing for that clay.");
+    setStatus("The clearing is full; there is no open space for that clay.");
   });
 
   canvas.addEventListener("pointercancel", () => {
@@ -857,7 +1044,7 @@
   window.addEventListener("resize", resizeMap);
   if (document.fonts?.ready) document.fonts.ready.then(() => drawMap());
   shuffle(state.blocks);
+  renderElementBank();
   resizeMap();
   renderDetail();
-  renderRecipes();
 })();
